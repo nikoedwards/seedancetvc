@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Seedance Canvas Studio</title>
+    <link rel="stylesheet" href="/styles.css?v=20260606-error-node" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <div class="brand-mark">S</div>
+          <div>
+            <p class="eyebrow">Seedance Canvas Studio</p>
+            <h1>画布式视频生成工作台</h1>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button id="newCanvasBtn" class="secondary-btn" type="button">新增画布</button>
+          <button id="addSeedanceNodeBtn" type="button">新增 Seedance 节点</button>
+          <button id="saveWorkspaceBtn" class="ghost-btn" type="button">保存</button>
+        </div>
+      </header>
+
+      <main class="studio-layout" id="studioLayout">
+        <aside id="configPanel" class="side-panel config-panel" aria-label="模型配置">
+          <div class="config-rail">
+            <button id="expandConfigBtn" class="rail-btn" type="button" title="展开模型配置">配置</button>
+          </div>
+
+          <div class="config-content">
+            <div class="panel-head">
+              <div>
+                <h2>模型配置</h2>
+                <p>只需要填 API Key，其他参数已按 Seedance 默认值配置。</p>
+              </div>
+              <div class="panel-actions">
+                <span id="serverState" class="server-badge">连接中</span>
+                <button id="toggleConfigBtn" class="icon-btn" type="button" title="折叠模型配置">‹</button>
+              </div>
+            </div>
+
+            <section class="config-card">
+              <div class="card-topline">
+                <div>
+                  <span class="model-chip">seedance-2-0</span>
+                  <p class="card-subtitle">Water Pipe 视频生成统一入口</p>
+                </div>
+              </div>
+              <label>
+                <span>API Key</span>
+                <input id="apiKey" type="password" autocomplete="off" placeholder="粘贴 Water Pipe API Key" />
+              </label>
+              <button id="testApiBtn" type="button">测试连通性</button>
+              <p id="apiTestResult" class="hint-text">未填写 API Key 时，创建任务会走 Mock 预览。</p>
+            </section>
+
+            <details class="advanced-config">
+              <summary>高级设置</summary>
+              <div class="advanced-grid">
+                <label>
+                  <span>创建任务 Endpoint</span>
+                  <input id="createEndpoint" />
+                </label>
+                <label>
+                  <span>轮询 Endpoint 模板</span>
+                  <input id="pollEndpoint" />
+                </label>
+                <label>
+                  <span>模型名</span>
+                  <input id="modelName" />
+                </label>
+                <label>
+                  <span>X-WP-Title</span>
+                  <input id="wpTitle" />
+                </label>
+                <label>
+                  <span>额外 Headers JSON</span>
+                  <textarea id="extraHeaders" rows="4" placeholder='{"X-Trace-Id":"demo"}'></textarea>
+                </label>
+              </div>
+            </details>
+
+            <section class="compact-help">
+              <h3>输入规则</h3>
+              <p>Prompt 必填。图片最多 9 张；首帧和尾帧各 1 张；参考视频最多 3 段；参考音频最多 3 段，且必须搭配图片或视频。</p>
+            </section>
+
+            <section class="response-section">
+              <div class="panel-head compact">
+                <h3>任务响应</h3>
+                <button id="clearResponseBtn" class="ghost-btn" type="button">清空</button>
+              </div>
+              <pre id="responseLog"></pre>
+            </section>
+          </div>
+        </aside>
+
+        <section class="canvas-shell" aria-label="画布">
+          <div class="canvas-toolbar">
+            <div id="canvasTabs" class="canvas-tabs"></div>
+            <div class="canvas-tools">
+              <button id="zoomOutBtn" class="tool-btn" type="button">−</button>
+              <span id="zoomLabel" class="zoom-label">100%</span>
+              <button id="zoomInBtn" class="tool-btn" type="button">+</button>
+              <button id="resetViewBtn" class="ghost-btn" type="button">重置视图</button>
+              <button id="duplicateNodeBtn" class="ghost-btn" type="button" disabled>复制</button>
+              <button id="deleteNodeBtn" class="danger-btn" type="button" disabled>删除</button>
+            </div>
+          </div>
+
+          <div id="canvasViewport" class="canvas-viewport">
+            <div id="canvasBoard" class="canvas-board"></div>
+            <div id="emptyState" class="empty-state">
+              <h2>从一个 Seedance 节点开始</h2>
+              <p>点击节点上的 Prompt、首帧、尾帧或下方输入口，再上传本地文件或粘贴互联网 URL。</p>
+              <button id="emptyAddNodeBtn" type="button">新增 Seedance 节点</button>
+            </div>
+            <div class="canvas-hint">拖动画布空白处平移，滚轮缩放，拖动节点标题移动节点。</div>
+          </div>
+        </section>
+
+        <aside class="side-panel inspector-panel" aria-label="节点预览">
+          <div class="panel-head">
+            <div>
+              <h2>节点预览</h2>
+              <p id="selectedNodeLabel">未选择节点</p>
+            </div>
+          </div>
+
+          <div id="inspectorEmpty" class="inspector-empty">
+            <p>选择一个 Seedance 节点后，这里会显示请求预览和生成动作。素材输入请直接点击画布节点上的端口。</p>
+          </div>
+
+          <div id="nodeSummary" class="node-summary"></div>
+
+          <section class="param-panel">
+            <h3>任务参数</h3>
+            <div id="paramEditor" class="param-editor"></div>
+          </section>
+
+          <section class="request-preview">
+            <div class="panel-head compact">
+              <h3>请求体预览</h3>
+              <div class="preview-actions">
+                <button id="copyRequestBtn" class="ghost-btn" type="button" disabled>复制 JSON</button>
+                <button id="createTaskBtn" type="button" disabled>创建任务</button>
+                <button id="pollTaskBtn" class="ghost-btn" type="button" disabled>轮询一次</button>
+              </div>
+            </div>
+            <div id="validationBox" class="validation-box"></div>
+            <pre id="requestPreview"></pre>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <div id="inputOverlay" class="input-overlay" hidden>
+      <section class="input-sheet" role="dialog" aria-modal="true" aria-labelledby="inputSheetTitle">
+        <div class="sheet-head">
+          <div>
+            <p id="inputSheetEyebrow" class="eyebrow">Seedance 输入</p>
+            <h2 id="inputSheetTitle">输入</h2>
+          </div>
+          <button id="closeInputSheetBtn" class="ghost-btn" type="button">关闭</button>
+        </div>
+        <div id="inputSheetBody" class="sheet-body"></div>
+      </section>
+    </div>
+
+    <script src="/app.js?v=20260606-error-node" type="module"></script>
+  </body>
+</html>

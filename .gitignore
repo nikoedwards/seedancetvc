@@ -1,0 +1,7 @@
+server.out.log
+server.err.log
+data/projects/
+outputs/**
+!outputs/.gitkeep
+uploads/**
+!uploads/.gitkeep
