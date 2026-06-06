@@ -131,6 +131,7 @@ const state = {
     nodeMenuOpen: false,
     connectingFrom: "",
     connectionPreview: null,
+    connectionTargetId: "",
     contextMenu: {
       open: false,
       x: 0,
@@ -340,6 +341,7 @@ function serializeWorkspace(options = {}) {
       nodeMenuOpen: false,
       connectingFrom: "",
       connectionPreview: null,
+      connectionTargetId: "",
       contextMenu: {
         ...(state.ui.contextMenu || {}),
         open: false
@@ -444,6 +446,7 @@ function applyWorkspaceSnapshot(saved) {
     nodeMenuOpen: false,
     connectingFrom: "",
     connectionPreview: null,
+    connectionTargetId: "",
     contextMenu: { ...state.ui.contextMenu, open: false }
   };
   return true;
@@ -2212,6 +2215,7 @@ function connectNodes(fromId, toId) {
   if ((canvas.connections || []).some((connection) => connection.from === fromId && connection.to === toId)) {
     state.ui.connectingFrom = "";
     state.ui.connectionPreview = null;
+    state.ui.connectionTargetId = "";
     renderCanvas();
     return;
   }
@@ -2227,39 +2231,67 @@ function connectNodes(fromId, toId) {
   });
   state.ui.connectingFrom = "";
   state.ui.connectionPreview = null;
+  state.ui.connectionTargetId = "";
   state.selectedNodeId = toId;
   render();
 }
 
-function startConnection(nodeId) {
+function startConnection(nodeId, event = null) {
   const node = getNodeById(nodeId);
   if (!node) return;
   state.ui.connectingFrom = nodeId;
-  state.ui.connectionPreview = outputAnchor(node);
+  state.ui.connectionPreview = event ? clientToCanvas(event.clientX, event.clientY) : outputAnchor(node);
+  state.ui.connectionTargetId = "";
   state.selectedNodeId = nodeId;
   closeCanvasContextMenu();
   renderCanvas();
   renderInspector();
   renderRequestPreview();
+  if (event) updateConnectionPreview(event);
 }
 
 function cancelConnection() {
   if (!state.ui.connectingFrom) return;
   state.ui.connectingFrom = "";
   state.ui.connectionPreview = null;
+  state.ui.connectionTargetId = "";
   renderCanvas();
 }
 
-function handleConnectClick(nodeId) {
-  if (!state.ui.connectingFrom) {
-    startConnection(nodeId);
+function finishConnection() {
+  const fromId = state.ui.connectingFrom;
+  const targetId = state.ui.connectionTargetId;
+  if (fromId && targetId && fromId !== targetId) {
+    connectNodes(fromId, targetId);
     return;
   }
-  if (state.ui.connectingFrom === nodeId) {
-    cancelConnection();
-    return;
-  }
-  connectNodes(state.ui.connectingFrom, nodeId);
+  cancelConnection();
+}
+
+function findConnectionTarget(event, sourceId) {
+  const canvas = getActiveCanvas();
+  const candidates = $$(".node")
+    .map((nodeEl) => {
+      const nodeId = nodeEl.dataset.nodeId;
+      if (!nodeId || nodeId === sourceId) return null;
+      const node = canvas.nodes.find((item) => item.id === nodeId);
+      if (!node) return null;
+      const rect = nodeEl.getBoundingClientRect();
+      const pad = 52;
+      const inside =
+        event.clientX >= rect.left - pad &&
+        event.clientX <= rect.right + pad &&
+        event.clientY >= rect.top - pad &&
+        event.clientY <= rect.bottom + pad;
+      if (!inside) return null;
+      const closestX = Math.max(rect.left, Math.min(event.clientX, rect.right));
+      const closestY = Math.max(rect.top, Math.min(event.clientY, rect.bottom));
+      const distance = Math.hypot(event.clientX - closestX, event.clientY - closestY);
+      return { node, nodeEl, distance };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.distance - b.distance);
+  return candidates[0] || null;
 }
 
 function updateConnectionPreview(event) {
@@ -2271,13 +2303,12 @@ function updateConnectionPreview(event) {
     return;
   }
   const point = clientToCanvas(event.clientX, event.clientY);
-  const element = document.elementFromPoint(event.clientX, event.clientY);
-  const targetEl = element?.closest?.(".node");
-  const targetNode = targetEl ? canvas.nodes.find((node) => node.id === targetEl.dataset.nodeId) : null;
-  const snapTarget = targetNode && targetNode.id !== source.id ? inputAnchor(targetNode) : null;
+  const target = findConnectionTarget(event, source.id);
+  const snapTarget = target ? inputAnchor(target.node) : null;
   state.ui.connectionPreview = snapTarget || point;
+  state.ui.connectionTargetId = target?.node.id || "";
   els.canvasBoard.querySelectorAll(".node.connection-hot").forEach((nodeEl) => nodeEl.classList.remove("connection-hot"));
-  if (targetEl && targetNode?.id !== source.id) targetEl.classList.add("connection-hot");
+  if (target) target.nodeEl.classList.add("connection-hot");
   const path = els.canvasBoard.querySelector(".connection-preview-path");
   if (path) path.setAttribute("d", bezierPath(outputAnchor(source), state.ui.connectionPreview));
 }
@@ -2429,7 +2460,6 @@ function bindCanvasEvents() {
     const nodeId = nodeEl.dataset.nodeId;
     if (event.target.closest("[data-action='connector']")) {
       event.stopPropagation();
-      handleConnectClick(nodeId);
       return;
     }
     if (state.ui.connectingFrom && nodeId !== state.ui.connectingFrom) {
@@ -2440,11 +2470,6 @@ function bindCanvasEvents() {
     if (event.target.closest("[data-action='delete-node']")) {
       event.stopPropagation();
       deleteNode(nodeId);
-      return;
-    }
-    if (event.target.closest("[data-action='connect-node']")) {
-      event.stopPropagation();
-      handleConnectClick(nodeId);
       return;
     }
     if (event.target.closest("[data-action='create-task']")) {
@@ -2480,6 +2505,17 @@ function bindCanvasEvents() {
   });
 
   els.canvasBoard.addEventListener("pointerdown", (event) => {
+    const connector = event.target.closest("[data-action='connector']");
+    if (connector) {
+      const nodeEl = event.target.closest(".node");
+      const nodeId = nodeEl?.dataset.nodeId;
+      if (!nodeId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      els.canvasViewport.setPointerCapture(event.pointerId);
+      startConnection(nodeId, event);
+      return;
+    }
     const handle = event.target.closest("[data-drag-handle]");
     if (!handle || event.target.closest("button")) return;
     const nodeEl = event.target.closest(".node");
@@ -2513,7 +2549,12 @@ function bindCanvasEvents() {
     renderConnectionsOnly();
   });
 
-  els.canvasBoard.addEventListener("pointerup", () => {
+  els.canvasBoard.addEventListener("pointerup", (event) => {
+    if (state.ui.connectingFrom) {
+      finishConnection();
+      if (els.canvasViewport.hasPointerCapture?.(event.pointerId)) els.canvasViewport.releasePointerCapture(event.pointerId);
+      return;
+    }
     if (!nodeDrag) return;
     nodeDrag = null;
     saveWorkspace();
@@ -2546,7 +2587,12 @@ function bindCanvasEvents() {
     applyCanvasTransform();
   });
 
-  els.canvasViewport.addEventListener("pointerup", () => {
+  els.canvasViewport.addEventListener("pointerup", (event) => {
+    if (state.ui.connectingFrom) {
+      finishConnection();
+      if (els.canvasViewport.hasPointerCapture?.(event.pointerId)) els.canvasViewport.releasePointerCapture(event.pointerId);
+      return;
+    }
     if (!panDrag) return;
     panDrag = null;
     els.canvasViewport.classList.remove("panning");
