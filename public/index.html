@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Seedance Canvas Studio</title>
-    <link rel="stylesheet" href="/styles.css?v=20260606-error-node" />
+    <link rel="stylesheet" href="/styles.css?v=20260606-image2-node" />
   </head>
   <body>
     <div class="app-shell">
@@ -18,7 +18,14 @@
         </div>
         <div class="top-actions">
           <button id="newCanvasBtn" class="secondary-btn" type="button">新增画布</button>
-          <button id="addSeedanceNodeBtn" type="button">新增 Seedance 节点</button>
+          <div class="node-add-menu">
+            <button id="addNodeMenuBtn" type="button">新增节点</button>
+            <div id="nodeAddMenu" class="node-menu" hidden>
+              <button id="addSeedanceNodeBtn" type="button">Seedance 视频节点</button>
+              <button id="addImage2NodeBtn" type="button">Image2 图片节点</button>
+            </div>
+          </div>
+          <button id="apiManagerBtn" class="secondary-btn" type="button">API 配置</button>
           <button id="saveWorkspaceBtn" class="ghost-btn" type="button">保存</button>
         </div>
       </header>
@@ -169,6 +176,81 @@
       </section>
     </div>
 
-    <script src="/app.js?v=20260606-error-node" type="module"></script>
+    <div id="apiOverlay" class="input-overlay" hidden>
+      <section class="input-sheet api-sheet" role="dialog" aria-modal="true" aria-labelledby="apiSheetTitle">
+        <div class="sheet-head">
+          <div>
+            <p class="eyebrow">API Manager</p>
+            <h2 id="apiSheetTitle">API 配置</h2>
+          </div>
+          <button id="closeApiManagerBtn" class="ghost-btn" type="button">关闭</button>
+        </div>
+        <div class="sheet-body api-grid">
+          <section class="api-card">
+            <div>
+              <h3>Seedance</h3>
+              <p class="hint-text">视频生成节点的运行配置。</p>
+            </div>
+            <label>
+              <span>API Key</span>
+              <input id="apiSeedanceKey" type="password" autocomplete="off" />
+            </label>
+            <label>
+              <span>Create Endpoint</span>
+              <input id="apiSeedanceCreateEndpoint" />
+            </label>
+            <label>
+              <span>Poll Endpoint</span>
+              <input id="apiSeedancePollEndpoint" />
+            </label>
+            <label>
+              <span>Model</span>
+              <input id="apiSeedanceModelName" />
+            </label>
+            <label>
+              <span>X-WP-Title</span>
+              <input id="apiSeedanceWpTitle" />
+            </label>
+            <label>
+              <span>Extra Headers JSON</span>
+              <textarea id="apiSeedanceExtraHeaders" rows="3"></textarea>
+            </label>
+          </section>
+
+          <section class="api-card">
+            <div>
+              <h3>Image2</h3>
+              <p class="hint-text">图片生成节点的运行配置。</p>
+            </div>
+            <label>
+              <span>API Key</span>
+              <input id="image2ApiKey" type="password" autocomplete="off" />
+            </label>
+            <label>
+              <span>Endpoint</span>
+              <input id="image2Endpoint" />
+            </label>
+            <label>
+              <span>Model</span>
+              <input id="image2ModelName" />
+            </label>
+            <label>
+              <span>X-WP-Title</span>
+              <input id="image2WpTitle" />
+            </label>
+            <label>
+              <span>Extra Headers JSON</span>
+              <textarea id="image2ExtraHeaders" rows="3"></textarea>
+            </label>
+          </section>
+
+          <div class="inline-actions api-actions">
+            <button id="saveApiConfigBtn" type="button">保存 API 配置</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <script src="/app.js?v=20260606-image2-node" type="module"></script>
   </body>
 </html>

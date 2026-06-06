@@ -61,11 +61,29 @@ const { task: polled } = await post("/api/seedance/poll", {
 
 if (polled.status !== "succeeded") throw new Error(`expected succeeded, got ${polled.status}`);
 
+const { result: image2 } = await post("/api/image2/generate", {
+  config: {
+    mode: "mock",
+    model: "gpt-image-2"
+  },
+  requestBody: {
+    model: "gpt-image-2",
+    prompt: "画一张清晨湖边的插画，电影感光影",
+    size: "1024x1024",
+    quality: "high",
+    n: 1,
+    output_format: "png"
+  }
+});
+
+if (!image2.content?.image_url) throw new Error("mock image2 did not return image url");
+
 console.log(JSON.stringify({
   ok: true,
   page: `${baseUrl}/`,
   createTaskId: created.id,
   pollStatus: polled.status,
   videoUrl: polled.content.video_url,
+  image2Url: image2.content.image_url,
   ffmpegAvailable: health.ffmpeg
 }, null, 2));

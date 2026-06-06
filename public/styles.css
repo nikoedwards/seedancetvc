@@ -172,6 +172,38 @@ h3 {
   justify-content: flex-end;
 }
 
+.node-add-menu {
+  position: relative;
+}
+
+.node-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow-md);
+}
+
+.node-menu[hidden] {
+  display: none;
+}
+
+.node-menu button {
+  justify-content: flex-start;
+  width: 100%;
+  color: var(--text);
+  background: #fff;
+  border-color: var(--line);
+  text-align: left;
+}
+
 .studio-layout {
   min-height: 0;
   display: grid;
@@ -580,6 +612,14 @@ h3 {
   border-color: rgba(37, 99, 235, 0.34);
 }
 
+.image2-node {
+  border-color: rgba(124, 58, 237, 0.36);
+}
+
+.image2-node .node-head {
+  background: linear-gradient(180deg, #fbfaff, #f5f0ff);
+}
+
 .result-node .node-head {
   background: linear-gradient(180deg, #f8fbff, #eef6ff);
 }
@@ -624,6 +664,7 @@ h3 {
 }
 
 .video-preview,
+.image-preview,
 .result-empty {
   width: 100%;
   aspect-ratio: 16 / 9;
@@ -632,9 +673,15 @@ h3 {
   background: #101820;
 }
 
-.video-preview {
+.video-preview,
+.image-preview {
   display: block;
   object-fit: cover;
+}
+
+.image-preview {
+  aspect-ratio: 1 / 1;
+  background: #f8fafc;
 }
 
 .result-empty {
@@ -809,6 +856,19 @@ h3 {
   gap: 10px;
 }
 
+.connection-editor {
+  display: grid;
+  gap: 9px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  border-radius: 8px;
+  background: #eff6ff;
+  padding: 10px;
+}
+
+.connection-editor h3 {
+  color: var(--blue);
+}
+
 .two-col {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -876,6 +936,33 @@ h3 {
   border: 1px solid var(--line);
   background: #fff;
   box-shadow: var(--shadow-md);
+}
+
+.api-sheet {
+  width: min(920px, 100%);
+}
+
+.api-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+.api-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 12px;
+}
+
+.api-card h3 {
+  font-size: 15px;
+}
+
+.api-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
 }
 
 .sheet-head {
@@ -974,6 +1061,7 @@ h3 {
   .topbar,
   .studio-layout,
   .studio-layout.config-collapsed,
+  .api-grid,
   .two-col {
     grid-template-columns: 1fr;
   }

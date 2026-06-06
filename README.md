@@ -11,7 +11,7 @@ It is intentionally lightweight: no npm dependencies, no database, and no extern
 - Prepares multimodal generation inputs from prompt, image, video, and audio assets.
 - Validates key provider constraints before creating a task.
 - Proxies task creation and polling through the local Node server to avoid browser CORS issues.
-- Keeps runtime credentials in the current browser session only. Saved workspaces omit credentials.
+- Stores runtime credentials locally so the configured workspace survives refreshes.
 
 ## Run
 

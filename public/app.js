@@ -9,6 +9,14 @@ const DEFAULT_CONFIG = {
   extraHeaders: ""
 };
 
+const DEFAULT_IMAGE2_CONFIG = {
+  endpoint: "https://agent-api.shuiditech.com/api/v1/images/generations",
+  model: "gpt-image-2",
+  apiKey: "",
+  wpTitle: "demo-app",
+  extraHeaders: ""
+};
+
 const DEFAULT_NODE_PARAMS = {
   ratio: "16:9",
   duration: 5,
@@ -20,6 +28,17 @@ const DEFAULT_NODE_PARAMS = {
   callback_url: "",
   logo_add: "",
   logo_param: ""
+};
+
+const DEFAULT_IMAGE2_PARAMS = {
+  size: "1024x1024",
+  quality: "high",
+  n: 1,
+  output_format: "png",
+  output_compression: "",
+  background: "auto",
+  moderation: "auto",
+  user: ""
 };
 
 const INPUT_META = {
@@ -73,18 +92,39 @@ const INPUT_META = {
     single: false,
     accept: "audio/*",
     typeLabel: "音频"
+  },
+  referenceImageUrl: {
+    title: "参考图",
+    eyebrow: "image input",
+    description: "用于连接上游图片结果或上传一张参考图。进入 Image2 前可在连接映射里选择如何使用。",
+    kind: "asset",
+    single: true,
+    accept: "image/*",
+    typeLabel: "图片"
+  },
+  maskUrl: {
+    title: "Mask",
+    eyebrow: "mask",
+    description: "可选遮罩图。仅在当前图片模型支持 mask 时生效。",
+    kind: "asset",
+    single: true,
+    accept: "image/*",
+    typeLabel: "图片"
   }
 };
 
 const state = {
   config: { ...DEFAULT_CONFIG },
+  image2Config: { ...DEFAULT_IMAGE2_CONFIG },
   canvases: [],
   activeCanvasId: "",
   selectedNodeId: "",
   activeInput: null,
   responseLog: [],
   ui: {
-    configCollapsed: false
+    configCollapsed: false,
+    nodeMenuOpen: false,
+    connectingFrom: ""
   }
 };
 
@@ -105,10 +145,28 @@ const els = {
   extraHeaders: $("#extraHeaders"),
   toggleConfigBtn: $("#toggleConfigBtn"),
   expandConfigBtn: $("#expandConfigBtn"),
+  apiManagerBtn: $("#apiManagerBtn"),
+  apiOverlay: $("#apiOverlay"),
+  closeApiManagerBtn: $("#closeApiManagerBtn"),
+  saveApiConfigBtn: $("#saveApiConfigBtn"),
+  image2ApiKey: $("#image2ApiKey"),
+  image2Endpoint: $("#image2Endpoint"),
+  image2ModelName: $("#image2ModelName"),
+  image2WpTitle: $("#image2WpTitle"),
+  image2ExtraHeaders: $("#image2ExtraHeaders"),
+  apiSeedanceKey: $("#apiSeedanceKey"),
+  apiSeedanceCreateEndpoint: $("#apiSeedanceCreateEndpoint"),
+  apiSeedancePollEndpoint: $("#apiSeedancePollEndpoint"),
+  apiSeedanceModelName: $("#apiSeedanceModelName"),
+  apiSeedanceWpTitle: $("#apiSeedanceWpTitle"),
+  apiSeedanceExtraHeaders: $("#apiSeedanceExtraHeaders"),
   testApiBtn: $("#testApiBtn"),
   apiTestResult: $("#apiTestResult"),
   newCanvasBtn: $("#newCanvasBtn"),
+  addNodeMenuBtn: $("#addNodeMenuBtn"),
+  nodeAddMenu: $("#nodeAddMenu"),
   addSeedanceNodeBtn: $("#addSeedanceNodeBtn"),
+  addImage2NodeBtn: $("#addImage2NodeBtn"),
   emptyAddNodeBtn: $("#emptyAddNodeBtn"),
   saveWorkspaceBtn: $("#saveWorkspaceBtn"),
   duplicateNodeBtn: $("#duplicateNodeBtn"),
@@ -174,6 +232,21 @@ function defaultNode(x = 180, y = 150) {
   };
 }
 
+function defaultImage2Node(x = 180, y = 150) {
+  return {
+    id: uid("image2"),
+    type: "image2-input",
+    title: "Image2 节点",
+    x,
+    y,
+    prompt: "画一张清晨湖边的插画，电影感光影",
+    referenceImageUrl: "",
+    maskUrl: "",
+    params: { ...DEFAULT_IMAGE2_PARAMS },
+    inputBindings: {}
+  };
+}
+
 function getActiveCanvas() {
   return state.canvases.find((canvas) => canvas.id === state.activeCanvasId) || state.canvases[0];
 }
@@ -233,10 +306,38 @@ function syncConfigInputs() {
   els.extraHeaders.value = state.config.extraHeaders;
 }
 
+function syncApiManagerInputs() {
+  if (!els.apiOverlay) return;
+  els.apiSeedanceKey.value = state.config.apiKey || "";
+  els.apiSeedanceCreateEndpoint.value = state.config.createEndpoint || "";
+  els.apiSeedancePollEndpoint.value = state.config.pollEndpoint || "";
+  els.apiSeedanceModelName.value = state.config.model || "";
+  els.apiSeedanceWpTitle.value = state.config.wpTitle || "";
+  els.apiSeedanceExtraHeaders.value = state.config.extraHeaders || "";
+  els.image2ApiKey.value = state.image2Config.apiKey || "";
+  els.image2Endpoint.value = state.image2Config.endpoint || "";
+  els.image2ModelName.value = state.image2Config.model || "";
+  els.image2WpTitle.value = state.image2Config.wpTitle || "";
+  els.image2ExtraHeaders.value = state.image2Config.extraHeaders || "";
+}
+
+function updateApiConfigsFromManager() {
+  state.config.apiKey = els.apiSeedanceKey.value;
+  state.config.createEndpoint = els.apiSeedanceCreateEndpoint.value.trim();
+  state.config.pollEndpoint = els.apiSeedancePollEndpoint.value.trim();
+  state.config.model = els.apiSeedanceModelName.value.trim() || "seedance-2-0";
+  state.config.wpTitle = els.apiSeedanceWpTitle.value.trim() || "demo-app";
+  state.config.extraHeaders = els.apiSeedanceExtraHeaders.value.trim();
+  state.image2Config.apiKey = els.image2ApiKey.value;
+  state.image2Config.endpoint = els.image2Endpoint.value.trim();
+  state.image2Config.model = els.image2ModelName.value.trim() || "gpt-image-2";
+  state.image2Config.wpTitle = els.image2WpTitle.value.trim() || "demo-app";
+  state.image2Config.extraHeaders = els.image2ExtraHeaders.value.trim();
+}
+
 function saveWorkspace(showMessage = false) {
   const snapshot = {
     ...state,
-    config: { ...state.config, apiKey: "" },
     activeInput: null,
     responseLog: []
   };
@@ -249,7 +350,8 @@ function loadWorkspace() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     const saved = JSON.parse(raw);
-    state.config = { ...DEFAULT_CONFIG, ...(saved.config || {}), apiKey: "" };
+    state.config = { ...DEFAULT_CONFIG, ...(saved.config || {}) };
+    state.image2Config = { ...DEFAULT_IMAGE2_CONFIG, ...(saved.image2Config || {}) };
     state.canvases = Array.isArray(saved.canvases) ? saved.canvases : [];
     state.activeCanvasId = saved.activeCanvasId || "";
     state.selectedNodeId = saved.selectedNodeId || "";
@@ -272,6 +374,10 @@ function ensureWorkspace() {
     for (const node of canvas.nodes) {
       if (!node.type) node.type = "seedance-input";
       if (node.type === "seedance-input") node.params = { ...DEFAULT_NODE_PARAMS, ...(node.params || {}) };
+      if (node.type === "image2-input") {
+        node.params = { ...DEFAULT_IMAGE2_PARAMS, ...(node.params || {}) };
+        node.inputBindings = node.inputBindings || {};
+      }
     }
   }
   if (!state.canvases.some((canvas) => canvas.id === state.activeCanvasId)) {
@@ -299,6 +405,7 @@ function applyUiState() {
   els.studioLayout.classList.toggle("config-collapsed", Boolean(state.ui.configCollapsed));
   els.toggleConfigBtn.textContent = state.ui.configCollapsed ? "›" : "‹";
   els.toggleConfigBtn.title = state.ui.configCollapsed ? "展开模型配置" : "折叠模型配置";
+  if (els.nodeAddMenu) els.nodeAddMenu.hidden = !state.ui.nodeMenuOpen;
 }
 
 function renderCanvasTabs() {
@@ -320,7 +427,7 @@ function renderCanvas() {
   els.emptyState.style.display = canvas.nodes.length ? "none" : "grid";
   els.canvasBoard.innerHTML = `${renderConnections(canvas)}${canvas.nodes.map(renderCanvasNode).join("")}`;
   const selectedNode = getSelectedNode();
-  els.duplicateNodeBtn.disabled = !selectedNode || selectedNode.type !== "seedance-input";
+  els.duplicateNodeBtn.disabled = !selectedNode || (selectedNode.type !== "seedance-input" && selectedNode.type !== "image2-input");
   els.deleteNodeBtn.disabled = !selectedNode;
   applyCanvasTransform();
 }
@@ -419,6 +526,8 @@ function renderPort(node, field, label, detail) {
 
 function renderCanvasNode(node) {
   if (node.type === "video-result") return renderResultCanvasNode(node);
+  if (node.type === "image-result") return renderImageResultCanvasNode(node);
+  if (node.type === "image2-input") return renderImage2CanvasNode(node);
   return renderSeedanceCanvasNode(node);
 }
 
@@ -455,6 +564,47 @@ function renderSeedanceCanvasNode(node) {
         <div class="node-actions">
           <button type="button" data-action="create-task">创建任务</button>
           <button class="ghost-btn" type="button" data-action="poll-task" ${node.lastTaskId ? "" : "disabled"}>轮询</button>
+          <button class="ghost-btn" type="button" data-action="connect-node">${state.ui.connectingFrom ? "接入" : "连接"}</button>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderImage2CanvasNode(node) {
+  const selected = node.id === state.selectedNodeId ? " selected" : "";
+  const promptText = node.prompt || "Prompt is empty";
+  const outputHint = node.referenceImageUrl ? "已设置参考图" : "可接上游图片";
+  return `
+    <article class="node image2-node${selected}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
+      <div class="node-head" data-drag-handle="true">
+        <div>
+          <strong>${escapeHtml(node.title)}</strong>
+          <span>text + optional image -> image</span>
+        </div>
+        <span class="node-model">${escapeHtml(state.image2Config.model || "gpt-image-2")}</span>
+        <button class="node-delete" type="button" data-action="delete-node" title="删除节点">x</button>
+      </div>
+      <div class="node-body">
+        <button class="input-port prompt" type="button" data-input-field="prompt">
+          <strong>Prompt / image text</strong>
+          <span>${escapeHtml(promptText.slice(0, 80))}${promptText.length > 80 ? "..." : ""}</span>
+        </button>
+        <div class="port-grid">
+          ${renderPort(node, "referenceImageUrl", "参考图输入", outputHint)}
+          ${renderPort(node, "maskUrl", "Mask 输入", node.maskUrl ? "已设置" : "可选")}
+          <button class="input-port active" type="button" data-focus-params="true">
+            <strong>图片参数</strong>
+            <span>${node.params.size} / ${node.params.quality} / ${node.params.output_format}</span>
+          </button>
+          <button class="input-port" type="button" data-action="connect-node">
+            <strong>连接节点</strong>
+            <span>${state.ui.connectingFrom ? "接入当前节点" : "作为输出源"}</span>
+          </button>
+        </div>
+        <div class="node-actions">
+          <button type="button" data-action="create-task">生成图片</button>
+          <button class="ghost-btn" type="button" data-action="connect-node">连接</button>
         </div>
       </div>
     </article>
@@ -497,7 +647,33 @@ function renderResultCanvasNode(node) {
         ${node.lastFrameImage ? `<div class="last-frame-link">尾帧: ${escapeHtml(node.lastFrameImage)}</div>` : ""}
         <div class="node-actions">
           <button class="ghost-btn" type="button" data-action="poll-result" ${node.taskId ? "" : "disabled"}>轮询</button>
+          <button class="ghost-btn" type="button" data-action="connect-node">${state.ui.connectingFrom ? "接入" : "连接"}</button>
           ${playable ? `<a class="open-link" href="${escapeHtml(videoUrl)}" target="_blank" rel="noreferrer">打开视频</a>` : ""}
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderImageResultCanvasNode(node) {
+  const selected = node.id === state.selectedNodeId ? " selected" : "";
+  const status = node.status || "succeeded";
+  const imageUrl = node.imageUrl || "";
+  return `
+    <article class="node result-node image-result-node${selected}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
+      <div class="node-head" data-drag-handle="true">
+        <div>
+          <strong>${escapeHtml(node.title || "图片结果")}</strong>
+          <span>${escapeHtml(imageUrl || "等待图片地址")}</span>
+        </div>
+        <span class="status-pill status-${escapeHtml(status)}">${escapeHtml(statusText(status))}</span>
+        <button class="node-delete" type="button" data-action="delete-node" title="删除节点">x</button>
+      </div>
+      <div class="node-body">
+        ${imageUrl ? `<img class="image-preview" src="${escapeHtml(imageUrl)}" alt="generated image" />` : `<div class="result-empty"><strong>${escapeHtml(statusText(status))}</strong><span>Waiting for image URL</span></div>`}
+        <div class="node-actions">
+          <button class="ghost-btn" type="button" data-action="connect-node">连接</button>
+          ${imageUrl ? `<a class="open-link" href="${escapeHtml(imageUrl)}" target="_blank" rel="noreferrer">打开图片</a>` : ""}
         </div>
       </div>
     </article>
@@ -546,15 +722,76 @@ function renderInspector() {
     return;
   }
 
-  if (node.type === "video-result") {
+  if (node.type === "video-result" || node.type === "image-result") {
     els.paramEditor.style.display = "none";
     els.nodeSummary.innerHTML = `
       <div class="summary-row"><span>Status</span><strong>${escapeHtml(statusText(node.status))}</strong></div>
       <div class="summary-row"><span>Task ID</span><strong>${escapeHtml(node.taskId || "-")}</strong></div>
-      <div class="summary-row"><span>Video</span><strong>${node.videoUrl ? "Ready" : "Waiting"}</strong></div>
+      <div class="summary-row"><span>Output</span><strong>${node.videoUrl || node.imageUrl ? "Ready" : "Waiting"}</strong></div>
       <div class="summary-row"><span>Last frame</span><strong>${node.lastFrameImage ? "Ready" : "None"}</strong></div>
       ${node.errorMessage ? `<div class="summary-row"><span>Error</span><strong>${escapeHtml(node.errorDetails?.code || "Failed")}</strong></div>` : ""}
     `;
+    return;
+  }
+
+  if (node.type === "image2-input") {
+    els.nodeSummary.innerHTML = `
+      <label>
+        <span>节点名称</span>
+        <input data-node-title value="${escapeHtml(node.title)}" />
+      </label>
+      <div class="summary-row"><span>Prompt</span><strong>${node.prompt.trim() ? "已填写" : "未填写"}</strong></div>
+      <div class="summary-row"><span>参考图</span><strong>${node.referenceImageUrl ? "已设置" : "未设置"}</strong></div>
+      <div class="summary-row"><span>Mask</span><strong>${node.maskUrl ? "已设置" : "未设置"}</strong></div>
+    `;
+    els.paramEditor.innerHTML = `
+      ${renderConnectionEditor(node)}
+      <div class="two-col">
+        <label>
+          <span>size</span>
+          <select data-param="size">
+            ${["1024x1024", "1536x1024", "1024x1536", "auto"].map((value) => `<option ${node.params.size === value ? "selected" : ""}>${value}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          <span>quality</span>
+          <select data-param="quality">
+            ${["high", "medium", "low", "auto"].map((value) => `<option ${node.params.quality === value ? "selected" : ""}>${value}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          <span>n</span>
+          <input data-param="n" type="number" min="1" max="4" value="${escapeHtml(node.params.n)}" />
+        </label>
+        <label>
+          <span>output_format</span>
+          <select data-param="output_format">
+            ${["png", "jpeg", "webp"].map((value) => `<option ${node.params.output_format === value ? "selected" : ""}>${value}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          <span>background</span>
+          <select data-param="background">
+            ${["auto", "transparent", "opaque"].map((value) => `<option ${node.params.background === value ? "selected" : ""}>${value}</option>`).join("")}
+          </select>
+        </label>
+        <label>
+          <span>moderation</span>
+          <select data-param="moderation">
+            ${["auto", "low"].map((value) => `<option ${node.params.moderation === value ? "selected" : ""}>${value}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+      <label>
+        <span>output_compression</span>
+        <input data-param="output_compression" type="number" min="1" max="100" value="${escapeHtml(node.params.output_compression)}" placeholder="jpeg / webp only" />
+      </label>
+      <label>
+        <span>user</span>
+        <input data-param="user" value="${escapeHtml(node.params.user)}" />
+      </label>
+    `;
+    bindInspectorInputs();
     return;
   }
 
@@ -571,6 +808,7 @@ function renderInspector() {
   `;
 
   els.paramEditor.innerHTML = `
+    ${renderConnectionEditor(node)}
     <div class="two-col">
       <label>
         <span>ratio</span>
@@ -619,6 +857,67 @@ function renderSwitch(field, label, checked) {
   `;
 }
 
+function getIncomingConnections(nodeId) {
+  const canvas = getActiveCanvas();
+  return (canvas.connections || []).filter((connection) => connection.to === nodeId);
+}
+
+function getNodeOutput(node) {
+  if (!node) return { type: "unknown", url: "" };
+  if (node.type === "image-result") return { type: "image", url: node.imageUrl || "" };
+  if (node.type === "video-result") {
+    if (node.lastFrameImage) return { type: "image", url: node.lastFrameImage };
+    return { type: "video", url: node.videoUrl || "" };
+  }
+  return { type: "node", url: "" };
+}
+
+function mappingOptionsForConnection(sourceNode, targetNode) {
+  const output = getNodeOutput(sourceNode);
+  const options = [{ value: "", label: "不引用上游输出" }];
+  if (targetNode.type === "seedance-input") {
+    if (output.type === "image") {
+      options.push(
+        { value: "firstFrameUrl", label: "作为首帧图" },
+        { value: "lastFrameUrl", label: "作为尾帧图" },
+        { value: "referenceImageUrls", label: "作为参考图" }
+      );
+    }
+    if (output.type === "video") options.push({ value: "referenceVideoUrls", label: "作为参考视频" });
+  }
+  if (targetNode.type === "image2-input" && output.type === "image") {
+    options.push(
+      { value: "referenceImageUrl", label: "作为参考图" },
+      { value: "maskUrl", label: "作为 Mask" }
+    );
+  }
+  return options;
+}
+
+function renderConnectionEditor(node) {
+  const incoming = getIncomingConnections(node.id);
+  if (!incoming.length) return "";
+  const canvas = getActiveCanvas();
+  return `
+    <section class="connection-editor">
+      <h3>上游输入</h3>
+      ${incoming.map((connection) => {
+        const source = canvas.nodes.find((item) => item.id === connection.from);
+        const output = getNodeOutput(source);
+        const options = mappingOptionsForConnection(source, node);
+        return `
+          <label>
+            <span>${escapeHtml(source?.title || "上游节点")} · ${escapeHtml(output.url || "暂无输出")}</span>
+            <select data-connection-map="${connection.id}">
+              ${options.map((option) => `<option value="${escapeHtml(option.value)}" ${connection.mapping === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+            </select>
+          </label>
+        `;
+      }).join("")}
+    </section>
+  `;
+}
+
 function bindInspectorInputs() {
   const titleInput = els.nodeSummary.querySelector("[data-node-title]");
   if (titleInput) {
@@ -637,8 +936,19 @@ function bindInspectorInputs() {
       if (!node) return;
       const key = input.dataset.param;
       if (input.type === "checkbox") node.params[key] = input.checked;
-      else if (key === "duration") node.params[key] = Number(input.value);
+      else if (key === "duration" || key === "n") node.params[key] = Number(input.value);
       else node.params[key] = input.value;
+      renderCanvas();
+      renderRequestPreview();
+      saveWorkspace();
+    });
+  });
+  $$("#paramEditor [data-connection-map]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const canvas = getActiveCanvas();
+      const connection = (canvas.connections || []).find((item) => item.id === input.dataset.connectionMap);
+      if (!connection) return;
+      connection.mapping = input.value;
       renderCanvas();
       renderRequestPreview();
       saveWorkspace();
@@ -647,7 +957,7 @@ function bindInspectorInputs() {
 }
 
 function getFieldUrls(node, field) {
-  if (field === "firstFrameUrl" || field === "lastFrameUrl") {
+  if (field === "firstFrameUrl" || field === "lastFrameUrl" || field === "referenceImageUrl" || field === "maskUrl") {
     return node[field] ? [node[field]] : [];
   }
   return splitLines(node[field]);
@@ -655,11 +965,27 @@ function getFieldUrls(node, field) {
 
 function setFieldUrls(node, field, urls) {
   const clean = urls.map((url) => String(url || "").trim()).filter(Boolean);
-  if (field === "firstFrameUrl" || field === "lastFrameUrl") {
+  if (field === "firstFrameUrl" || field === "lastFrameUrl" || field === "referenceImageUrl" || field === "maskUrl") {
     node[field] = clean[0] || "";
   } else {
     node[field] = joinLines(clean);
   }
+}
+
+function getMappedUrls(node, field) {
+  const canvas = getActiveCanvas();
+  return getIncomingConnections(node.id)
+    .filter((connection) => connection.mapping === field)
+    .map((connection) => getNodeOutput(canvas.nodes.find((item) => item.id === connection.from)).url)
+    .filter(Boolean);
+}
+
+function getResolvedFieldUrl(node, field) {
+  return getFieldUrls(node, field)[0] || getMappedUrls(node, field)[0] || "";
+}
+
+function getResolvedFieldUrls(node, field) {
+  return [...getFieldUrls(node, field), ...getMappedUrls(node, field)];
 }
 
 function openInputSheet(nodeId, field) {
@@ -825,11 +1151,13 @@ function buildRequest(node) {
   const negative = String(node.negativePrompt || "").trim();
   if (prompt) content.push({ type: "text", text: prompt });
   if (negative) content.push({ type: "text", text: `Negative prompt: ${negative}` });
-  if (node.firstFrameUrl.trim()) content.push({ type: "image_url", image_url: { url: node.firstFrameUrl.trim() }, role: "first_frame" });
-  if (node.lastFrameUrl.trim()) content.push({ type: "image_url", image_url: { url: node.lastFrameUrl.trim() }, role: "last_frame" });
-  splitLines(node.referenceImageUrls).forEach((url) => content.push({ type: "image_url", image_url: { url }, role: "reference_image" }));
-  splitLines(node.referenceVideoUrls).forEach((url) => content.push({ type: "video_url", video_url: { url }, role: "reference_video" }));
-  splitLines(node.referenceAudioUrls).forEach((url) => content.push({ type: "audio_url", audio_url: { url }, role: "reference_audio" }));
+  const firstFrameUrl = getResolvedFieldUrl(node, "firstFrameUrl");
+  const lastFrameUrl = getResolvedFieldUrl(node, "lastFrameUrl");
+  if (firstFrameUrl.trim()) content.push({ type: "image_url", image_url: { url: firstFrameUrl.trim() }, role: "first_frame" });
+  if (lastFrameUrl.trim()) content.push({ type: "image_url", image_url: { url: lastFrameUrl.trim() }, role: "last_frame" });
+  getResolvedFieldUrls(node, "referenceImageUrls").forEach((url) => content.push({ type: "image_url", image_url: { url }, role: "reference_image" }));
+  getResolvedFieldUrls(node, "referenceVideoUrls").forEach((url) => content.push({ type: "video_url", video_url: { url }, role: "reference_video" }));
+  getResolvedFieldUrls(node, "referenceAudioUrls").forEach((url) => content.push({ type: "audio_url", audio_url: { url }, role: "reference_audio" }));
 
   const request = {
     model: state.config.model || "seedance-2-0",
@@ -852,6 +1180,39 @@ function buildRequest(node) {
     }
   }
   return request;
+}
+
+function buildImage2Request(node) {
+  const request = {
+    model: state.image2Config.model || "gpt-image-2",
+    prompt: String(node.prompt || "").trim(),
+    size: node.params.size,
+    quality: node.params.quality,
+    n: Number(node.params.n) || 1,
+    output_format: node.params.output_format
+  };
+  if (node.params.output_compression !== "") request.output_compression = Number(node.params.output_compression);
+  if (node.params.background && node.params.background !== "auto") request.background = node.params.background;
+  if (node.params.moderation) request.moderation = node.params.moderation;
+  if (node.params.user) request.user = node.params.user;
+  const maskUrl = getResolvedFieldUrl(node, "maskUrl");
+  if (maskUrl) request.mask = maskUrl;
+  const referenceImageUrl = getResolvedFieldUrl(node, "referenceImageUrl");
+  if (referenceImageUrl) request.prompt = `${request.prompt}\n参考图：${referenceImageUrl}`;
+  return request;
+}
+
+function validateImage2Node(node, request) {
+  const errors = [];
+  const warnings = [];
+  if (!request.prompt) errors.push("Prompt 不能为空。");
+  if (!["1024x1024", "1536x1024", "1024x1536", "auto"].includes(request.size)) errors.push("size 不合法。");
+  if (!["high", "medium", "low", "auto"].includes(request.quality)) errors.push("quality 不合法。");
+  if (!Number.isInteger(request.n) || request.n < 1) errors.push("n 必须是正整数。");
+  if (request.background === "transparent" && !["png", "webp"].includes(request.output_format)) {
+    warnings.push("transparent background 通常需要 png 或 webp。");
+  }
+  return { errors, warnings };
 }
 
 function validateNode(node, request) {
@@ -885,11 +1246,12 @@ function renderRequestPreview() {
     els.pollTaskBtn.disabled = true;
     return;
   }
-  if (node.type === "video-result") {
+  if (node.type === "video-result" || node.type === "image-result") {
     els.requestPreview.textContent = JSON.stringify({
       taskId: node.taskId,
       status: node.status,
       videoUrl: node.videoUrl,
+      imageUrl: node.imageUrl,
       lastFrameImage: node.lastFrameImage,
       errorMessage: node.errorMessage,
       errorDetails: node.errorDetails,
@@ -900,6 +1262,20 @@ function renderRequestPreview() {
     els.copyRequestBtn.disabled = false;
     els.createTaskBtn.disabled = true;
     els.pollTaskBtn.disabled = !node.taskId;
+    return;
+  }
+  if (node.type === "image2-input") {
+    const request = buildImage2Request(node);
+    const validation = validateImage2Node(node, request);
+    els.requestPreview.textContent = JSON.stringify(request, null, 2);
+    els.validationBox.innerHTML = [
+      ...validation.errors.map((text) => `<div class="validation-item error">${escapeHtml(text)}</div>`),
+      ...validation.warnings.map((text) => `<div class="validation-item warn">${escapeHtml(text)}</div>`),
+      validation.errors.length || validation.warnings.length ? "" : `<div class="validation-item">图片请求校验通过，可以生成。</div>`
+    ].join("");
+    els.copyRequestBtn.disabled = false;
+    els.createTaskBtn.disabled = Boolean(validation.errors.length);
+    els.pollTaskBtn.disabled = true;
     return;
   }
   const request = buildRequest(node);
@@ -947,6 +1323,13 @@ function buildRuntimeConfig() {
   return {
     ...state.config,
     mode: state.config.apiKey ? "api" : "mock"
+  };
+}
+
+function buildImage2RuntimeConfig() {
+  return {
+    ...state.image2Config,
+    mode: state.image2Config.apiKey ? "api" : "mock"
   };
 }
 
@@ -1053,6 +1436,27 @@ function createFailureResultNode(sourceNode, error) {
   return resultNode;
 }
 
+function createImageResultNode(sourceNode, payload) {
+  const canvas = getActiveCanvas();
+  const result = payload?.result || payload || {};
+  const resultNode = {
+    id: uid("image-result"),
+    type: "image-result",
+    title: "Image result",
+    sourceNodeId: sourceNode.id,
+    taskId: result.id || "",
+    status: result.status || "succeeded",
+    x: sourceNode.x + 520,
+    y: sourceNode.y,
+    imageUrl: result.content?.image_url || result.imageUrl || "",
+    usage: result.usage || null,
+    raw: result
+  };
+  canvas.nodes.push(resultNode);
+  canvas.connections.push({ id: uid("edge"), from: sourceNode.id, to: resultNode.id, mapping: "" });
+  return resultNode;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1079,7 +1483,12 @@ async function testApiConnection() {
 
 async function createTask(nodeId = state.selectedNodeId) {
   const node = getNodeById(nodeId);
-  if (!node || node.type !== "seedance-input") return;
+  if (!node) return;
+  if (node.type === "image2-input") {
+    await createImage2Task(node.id);
+    return;
+  }
+  if (node.type !== "seedance-input") return;
   const requestBody = buildRequest(node);
   const validation = validateNode(node, requestBody);
   if (validation.errors.length) return;
@@ -1100,6 +1509,32 @@ async function createTask(nodeId = state.selectedNodeId) {
     const resultNode = createFailureResultNode(node, error);
     state.selectedNodeId = resultNode.id;
     pushResponse("seedance.create.error", error.payload || { error: error.message });
+    render();
+    saveWorkspace();
+  }
+}
+
+async function createImage2Task(nodeId = state.selectedNodeId) {
+  const node = getNodeById(nodeId);
+  if (!node || node.type !== "image2-input") return;
+  const requestBody = buildImage2Request(node);
+  const validation = validateImage2Node(node, requestBody);
+  if (validation.errors.length) return;
+  try {
+    const result = await apiJson("/api/image2/generate", {
+      config: buildImage2RuntimeConfig(),
+      requestBody
+    });
+    const resultNode = createImageResultNode(node, result);
+    state.selectedNodeId = resultNode.id;
+    pushResponse("image2.generate", result);
+    render();
+    saveWorkspace();
+  } catch (error) {
+    const resultNode = createFailureResultNode(node, error);
+    resultNode.title = "Image create failed";
+    state.selectedNodeId = resultNode.id;
+    pushResponse("image2.generate.error", error.payload || { error: error.message });
     render();
     saveWorkspace();
   }
@@ -1184,15 +1619,27 @@ function addSeedanceNode() {
   node.title = `Seedance 节点 ${canvas.nodes.length + 1}`;
   canvas.nodes.push(node);
   state.selectedNodeId = node.id;
+  state.ui.nodeMenuOpen = false;
+  render();
+}
+
+function addImage2Node() {
+  const canvas = getActiveCanvas();
+  const offset = canvas.nodes.length * 32;
+  const node = defaultImage2Node(160 + offset, 140 + offset);
+  node.title = `Image2 节点 ${canvas.nodes.length + 1}`;
+  canvas.nodes.push(node);
+  state.selectedNodeId = node.id;
+  state.ui.nodeMenuOpen = false;
   render();
 }
 
 function duplicateNode() {
   const canvas = getActiveCanvas();
   const node = getSelectedNode();
-  if (!node || node.type !== "seedance-input") return;
+  if (!node || (node.type !== "seedance-input" && node.type !== "image2-input")) return;
   const copy = JSON.parse(JSON.stringify(node));
-  copy.id = uid("seedance");
+  copy.id = uid(node.type === "image2-input" ? "image2" : "seedance");
   copy.title = `${node.title} Copy`;
   copy.x += 36;
   copy.y += 36;
@@ -1200,6 +1647,34 @@ function duplicateNode() {
   canvas.nodes.push(copy);
   state.selectedNodeId = copy.id;
   render();
+}
+
+function connectNodes(fromId, toId) {
+  if (!fromId || !toId || fromId === toId) return;
+  const canvas = getActiveCanvas();
+  if ((canvas.connections || []).some((connection) => connection.from === fromId && connection.to === toId)) return;
+  const source = canvas.nodes.find((node) => node.id === fromId);
+  const target = canvas.nodes.find((node) => node.id === toId);
+  if (!source || !target) return;
+  const options = mappingOptionsForConnection(source, target).filter((option) => option.value);
+  canvas.connections.push({
+    id: uid("edge"),
+    from: fromId,
+    to: toId,
+    mapping: options[0]?.value || ""
+  });
+  state.ui.connectingFrom = "";
+  state.selectedNodeId = toId;
+  render();
+}
+
+function handleConnectClick(nodeId) {
+  if (!state.ui.connectingFrom) {
+    state.ui.connectingFrom = nodeId;
+    renderCanvas();
+    return;
+  }
+  connectNodes(state.ui.connectingFrom, nodeId);
 }
 
 function deleteNode(nodeId = state.selectedNodeId) {
@@ -1235,6 +1710,15 @@ function resetView() {
   saveWorkspace();
 }
 
+function openApiManager() {
+  syncApiManagerInputs();
+  els.apiOverlay.hidden = false;
+}
+
+function closeApiManager() {
+  els.apiOverlay.hidden = true;
+}
+
 function bindStaticEvents() {
   [els.apiKey, els.createEndpoint, els.pollEndpoint, els.modelName, els.wpTitle, els.extraHeaders].forEach((input) => {
     input.addEventListener("input", () => {
@@ -1245,6 +1729,10 @@ function bindStaticEvents() {
     });
   });
 
+  els.addNodeMenuBtn.addEventListener("click", () => {
+    state.ui.nodeMenuOpen = !state.ui.nodeMenuOpen;
+    els.nodeAddMenu.hidden = !state.ui.nodeMenuOpen;
+  });
   els.toggleConfigBtn.addEventListener("click", () => {
     state.ui.configCollapsed = !state.ui.configCollapsed;
     applyUiState();
@@ -1256,8 +1744,22 @@ function bindStaticEvents() {
     saveWorkspace();
   });
   els.testApiBtn.addEventListener("click", testApiConnection);
+  els.apiManagerBtn.addEventListener("click", openApiManager);
+  els.closeApiManagerBtn.addEventListener("click", closeApiManager);
+  els.apiOverlay.addEventListener("click", (event) => {
+    if (event.target === els.apiOverlay) closeApiManager();
+  });
+  els.saveApiConfigBtn.addEventListener("click", () => {
+    updateApiConfigsFromManager();
+    syncConfigInputs();
+    renderCanvas();
+    renderRequestPreview();
+    saveWorkspace(true);
+    closeApiManager();
+  });
   els.newCanvasBtn.addEventListener("click", addCanvas);
   els.addSeedanceNodeBtn.addEventListener("click", addSeedanceNode);
+  els.addImage2NodeBtn.addEventListener("click", addImage2Node);
   els.emptyAddNodeBtn.addEventListener("click", addSeedanceNode);
   els.duplicateNodeBtn.addEventListener("click", duplicateNode);
   els.deleteNodeBtn.addEventListener("click", () => deleteNode());
@@ -1307,6 +1809,11 @@ function bindCanvasEvents() {
     if (event.target.closest("[data-action='delete-node']")) {
       event.stopPropagation();
       deleteNode(nodeId);
+      return;
+    }
+    if (event.target.closest("[data-action='connect-node']")) {
+      event.stopPropagation();
+      handleConnectClick(nodeId);
       return;
     }
     if (event.target.closest("[data-action='create-task']")) {

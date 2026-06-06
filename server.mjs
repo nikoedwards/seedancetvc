@@ -831,6 +831,78 @@ async function pollWaterPipeTask(config = {}, taskId) {
   return data;
 }
 
+function normalizeImage2Request(requestBody = {}) {
+  const { response_format, style, input_reference, ...rest } = requestBody;
+  return rest;
+}
+
+async function createMockImage2Asset(requestBody = {}) {
+  const outDir = path.join(outputDir, "image2");
+  mkdirSync(outDir, { recursive: true });
+  const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.svg`;
+  const filePath = path.join(outDir, fileName);
+  const prompt = escapeXml(String(requestBody.prompt || "Image2 mock image").slice(0, 220));
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#111827"/>
+  <rect x="72" y="72" width="880" height="880" rx="28" fill="#f8fafc"/>
+  <circle cx="780" cy="220" r="96" fill="#f59e0b" opacity="0.88"/>
+  <path d="M112 762 C240 610 352 610 496 760 C620 890 758 848 912 668 L912 952 L112 952 Z" fill="#0f766e"/>
+  <path d="M112 650 C236 536 356 520 488 642 C620 762 744 760 912 564 L912 952 L112 952 Z" fill="#2563eb" opacity="0.75"/>
+  <text x="112" y="164" fill="#111827" font-family="Arial, sans-serif" font-size="42" font-weight="700">Image2 Mock</text>
+  <foreignObject x="112" y="214" width="760" height="260">
+    <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: Arial, sans-serif; font-size: 30px; color: #334155; line-height: 1.35;">${prompt}</div>
+  </foreignObject>
+</svg>`;
+  await writeFile(filePath, svg, "utf8");
+  return `/outputs/image2/${fileName}`;
+}
+
+async function createImage2Generation(config = {}, requestBody = {}) {
+  const normalizedRequestBody = normalizeImage2Request(requestBody);
+  if (config.mode === "mock") {
+    const imageUrl = await createMockImage2Asset(normalizedRequestBody);
+    return {
+      id: `mock-image2-${randomUUID().slice(0, 10)}`,
+      status: "succeeded",
+      mock: true,
+      content: { image_url: imageUrl },
+      request: normalizedRequestBody,
+      usage: { total_tokens: 0 }
+    };
+  }
+  const endpoint = config.endpoint;
+  if (!config.apiKey) throw new Error("Image2 API Key is required for real API mode");
+  if (!endpoint) throw new Error("Image2 endpoint is required for real API mode");
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: buildWaterPipeHeaders(config),
+    body: JSON.stringify(normalizedRequestBody)
+  });
+  const data = await response.json().catch(async () => ({ raw: await response.text() }));
+  if (!response.ok) {
+    throw makeSeedanceError("image2", response.status, data);
+  }
+  const b64 = data.data?.[0]?.b64_json;
+  let imageUrl = data.data?.[0]?.url || "";
+  if (b64) {
+    const format = normalizedRequestBody.output_format || "png";
+    const outDir = path.join(outputDir, "image2");
+    mkdirSync(outDir, { recursive: true });
+    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}.${format}`;
+    await writeFile(path.join(outDir, fileName), Buffer.from(b64, "base64"));
+    imageUrl = `/outputs/image2/${fileName}`;
+  }
+  return {
+    id: `image2-${randomUUID().slice(0, 10)}`,
+    status: "succeeded",
+    content: { image_url: imageUrl },
+    data: data.data || [],
+    usage: data.usage || null,
+    raw: data
+  };
+}
+
 function splitBuffer(buffer, separator) {
   const parts = [];
   let start = 0;
@@ -942,6 +1014,12 @@ async function route(req, res) {
       const payload = await readJson(req);
       const task = await pollWaterPipeTask(payload.config || {}, payload.taskId);
       sendJson(res, 200, { task });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/image2/generate") {
+      const payload = await readJson(req);
+      const result = await createImage2Generation(payload.config || {}, payload.requestBody || {});
+      sendJson(res, 200, { result });
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/projects") {
