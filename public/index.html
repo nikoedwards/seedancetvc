@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Seedance Canvas Studio</title>
-    <link rel="stylesheet" href="/styles.css?v=20260606-image2-node" />
+    <link rel="stylesheet" href="/styles.css?v=20260606-workflow-ui" />
   </head>
   <body>
     <div class="app-shell">
@@ -26,84 +26,12 @@
             </div>
           </div>
           <button id="apiManagerBtn" class="secondary-btn" type="button">API 配置</button>
+          <span id="serverState" class="server-badge">连接中</span>
           <button id="saveWorkspaceBtn" class="ghost-btn" type="button">保存</button>
         </div>
       </header>
 
       <main class="studio-layout" id="studioLayout">
-        <aside id="configPanel" class="side-panel config-panel" aria-label="模型配置">
-          <div class="config-rail">
-            <button id="expandConfigBtn" class="rail-btn" type="button" title="展开模型配置">配置</button>
-          </div>
-
-          <div class="config-content">
-            <div class="panel-head">
-              <div>
-                <h2>模型配置</h2>
-                <p>只需要填 API Key，其他参数已按 Seedance 默认值配置。</p>
-              </div>
-              <div class="panel-actions">
-                <span id="serverState" class="server-badge">连接中</span>
-                <button id="toggleConfigBtn" class="icon-btn" type="button" title="折叠模型配置">‹</button>
-              </div>
-            </div>
-
-            <section class="config-card">
-              <div class="card-topline">
-                <div>
-                  <span class="model-chip">seedance-2-0</span>
-                  <p class="card-subtitle">Water Pipe 视频生成统一入口</p>
-                </div>
-              </div>
-              <label>
-                <span>API Key</span>
-                <input id="apiKey" type="password" autocomplete="off" placeholder="粘贴 Water Pipe API Key" />
-              </label>
-              <button id="testApiBtn" type="button">测试连通性</button>
-              <p id="apiTestResult" class="hint-text">未填写 API Key 时，创建任务会走 Mock 预览。</p>
-            </section>
-
-            <details class="advanced-config">
-              <summary>高级设置</summary>
-              <div class="advanced-grid">
-                <label>
-                  <span>创建任务 Endpoint</span>
-                  <input id="createEndpoint" />
-                </label>
-                <label>
-                  <span>轮询 Endpoint 模板</span>
-                  <input id="pollEndpoint" />
-                </label>
-                <label>
-                  <span>模型名</span>
-                  <input id="modelName" />
-                </label>
-                <label>
-                  <span>X-WP-Title</span>
-                  <input id="wpTitle" />
-                </label>
-                <label>
-                  <span>额外 Headers JSON</span>
-                  <textarea id="extraHeaders" rows="4" placeholder='{"X-Trace-Id":"demo"}'></textarea>
-                </label>
-              </div>
-            </details>
-
-            <section class="compact-help">
-              <h3>输入规则</h3>
-              <p>Prompt 必填。图片最多 9 张；首帧和尾帧各 1 张；参考视频最多 3 段；参考音频最多 3 段，且必须搭配图片或视频。</p>
-            </section>
-
-            <section class="response-section">
-              <div class="panel-head compact">
-                <h3>任务响应</h3>
-                <button id="clearResponseBtn" class="ghost-btn" type="button">清空</button>
-              </div>
-              <pre id="responseLog"></pre>
-            </section>
-          </div>
-        </aside>
-
         <section class="canvas-shell" aria-label="画布">
           <div class="canvas-toolbar">
             <div id="canvasTabs" class="canvas-tabs"></div>
@@ -120,11 +48,16 @@
           <div id="canvasViewport" class="canvas-viewport">
             <div id="canvasBoard" class="canvas-board"></div>
             <div id="emptyState" class="empty-state">
-              <h2>从一个 Seedance 节点开始</h2>
-              <p>点击节点上的 Prompt、首帧、尾帧或下方输入口，再上传本地文件或粘贴互联网 URL。</p>
-              <button id="emptyAddNodeBtn" type="button">新增 Seedance 节点</button>
+              <h2>从画布开始搭工作流</h2>
+              <p>右键画布新增节点，点击节点旁的小加号拉出连接线。素材输入仍然直接点节点端口。</p>
+              <button id="emptyAddNodeBtn" type="button">新增节点</button>
             </div>
-            <div class="canvas-hint">拖动画布空白处平移，滚轮缩放，拖动节点标题移动节点。</div>
+            <div id="canvasContextMenu" class="canvas-context-menu" hidden>
+              <div class="context-title">新增节点</div>
+              <button type="button" data-context-add="seedance">Seedance 视频节点</button>
+              <button type="button" data-context-add="image2">Image2 图片节点</button>
+            </div>
+            <div class="canvas-hint">右键新增节点，拖动画布空白处平移，滚轮缩放，拖动节点标题移动节点。</div>
           </div>
         </section>
 
@@ -159,6 +92,19 @@
             <div id="validationBox" class="validation-box"></div>
             <pre id="requestPreview"></pre>
           </section>
+
+          <details class="compact-help inspector-help">
+            <summary>输入规则</summary>
+            <p>Seedance 至少需要一段 Prompt；图片输入用于首帧、尾帧或参考图；视频和音频输入用于续写、风格或节奏参考。Image2 以 Prompt 为核心，可接入上游图片作为参考图或 Mask。</p>
+          </details>
+
+          <section class="response-section">
+            <div class="panel-head compact">
+              <h3>任务响应</h3>
+              <button id="clearResponseBtn" class="ghost-btn" type="button">清空</button>
+            </div>
+            <pre id="responseLog"></pre>
+          </section>
         </aside>
       </main>
     </div>
@@ -189,59 +135,77 @@
           <section class="api-card">
             <div>
               <h3>Seedance</h3>
-              <p class="hint-text">视频生成节点的运行配置。</p>
+              <p class="hint-text">常规情况下只需要填写 API Key。</p>
             </div>
             <label>
               <span>API Key</span>
-              <input id="apiSeedanceKey" type="password" autocomplete="off" />
+              <input id="apiSeedanceKey" type="password" autocomplete="off" placeholder="粘贴 API Key" />
             </label>
-            <label>
-              <span>Create Endpoint</span>
-              <input id="apiSeedanceCreateEndpoint" />
-            </label>
-            <label>
-              <span>Poll Endpoint</span>
-              <input id="apiSeedancePollEndpoint" />
-            </label>
-            <label>
-              <span>Model</span>
-              <input id="apiSeedanceModelName" />
-            </label>
-            <label>
-              <span>X-WP-Title</span>
-              <input id="apiSeedanceWpTitle" />
-            </label>
-            <label>
-              <span>Extra Headers JSON</span>
-              <textarea id="apiSeedanceExtraHeaders" rows="3"></textarea>
-            </label>
+            <div class="inline-actions">
+              <button id="testSeedanceApiBtn" class="secondary-btn" type="button">测试连通性</button>
+              <p id="seedanceApiTestResult" class="hint-text">未填写时会使用 Mock 预览。</p>
+            </div>
+            <details class="advanced-config">
+              <summary>高级设置</summary>
+              <div class="advanced-grid">
+                <label>
+                  <span>Create Endpoint</span>
+                  <input id="apiSeedanceCreateEndpoint" />
+                </label>
+                <label>
+                  <span>Poll Endpoint</span>
+                  <input id="apiSeedancePollEndpoint" />
+                </label>
+                <label>
+                  <span>Model</span>
+                  <input id="apiSeedanceModelName" />
+                </label>
+                <label>
+                  <span>X-WP-Title</span>
+                  <input id="apiSeedanceWpTitle" />
+                </label>
+                <label>
+                  <span>Extra Headers JSON</span>
+                  <textarea id="apiSeedanceExtraHeaders" rows="3" placeholder='{"X-Trace-Id":"demo"}'></textarea>
+                </label>
+              </div>
+            </details>
           </section>
 
           <section class="api-card">
             <div>
               <h3>Image2</h3>
-              <p class="hint-text">图片生成节点的运行配置。</p>
+              <p class="hint-text">常规情况下只需要填写 API Key。</p>
             </div>
             <label>
               <span>API Key</span>
-              <input id="image2ApiKey" type="password" autocomplete="off" />
+              <input id="image2ApiKey" type="password" autocomplete="off" placeholder="粘贴 API Key" />
             </label>
-            <label>
-              <span>Endpoint</span>
-              <input id="image2Endpoint" />
-            </label>
-            <label>
-              <span>Model</span>
-              <input id="image2ModelName" />
-            </label>
-            <label>
-              <span>X-WP-Title</span>
-              <input id="image2WpTitle" />
-            </label>
-            <label>
-              <span>Extra Headers JSON</span>
-              <textarea id="image2ExtraHeaders" rows="3"></textarea>
-            </label>
+            <div class="inline-actions">
+              <button id="testImage2ApiBtn" class="secondary-btn" type="button">测试连通性</button>
+              <p id="image2ApiTestResult" class="hint-text">未填写时会使用 Mock 预览。</p>
+            </div>
+            <details class="advanced-config">
+              <summary>高级设置</summary>
+              <div class="advanced-grid">
+                <label>
+                  <span>Endpoint</span>
+                  <input id="image2Endpoint" />
+                </label>
+                <label>
+                  <span>Model</span>
+                  <input id="image2ModelName" />
+                </label>
+                <label>
+                  <span>X-WP-Title</span>
+                  <input id="image2WpTitle" />
+                </label>
+                <label>
+                  <span>Extra Headers JSON</span>
+                  <textarea id="image2ExtraHeaders" rows="3" placeholder='{"X-Trace-Id":"demo"}'></textarea>
+                </label>
+              </div>
+            </details>
           </section>
 
           <div class="inline-actions api-actions">
@@ -251,6 +215,6 @@
       </section>
     </div>
 
-    <script src="/app.js?v=20260606-image2-node" type="module"></script>
+    <script src="/app.js?v=20260606-workflow-ui" type="module"></script>
   </body>
 </html>

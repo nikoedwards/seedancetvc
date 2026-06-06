@@ -713,6 +713,41 @@ async function testWaterPipeConnection(config = {}) {
   }
 }
 
+async function testImage2Connection(config = {}) {
+  const endpoint = config.endpoint || "https://agent-api.shuiditech.com/api/v1/images/generations";
+  if (!config.apiKey) {
+    return {
+      ok: false,
+      mode: "mock",
+      message: "请先填写 API Key。未填写时仍可使用 Mock 预览。"
+    };
+  }
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: buildWaterPipeHeaders(config),
+      signal: AbortSignal.timeout(10000)
+    });
+    const text = await response.text().catch(() => "");
+    const reachable = response.status < 500;
+    return {
+      ok: reachable && response.status !== 401 && response.status !== 403,
+      reachable,
+      status: response.status,
+      message: reachable
+        ? `端点可达，HTTP ${response.status}。如果返回 404/405，通常表示服务在线但该地址只接受 POST 创建任务。`
+        : `端点返回 HTTP ${response.status}，请检查地址或网络。`,
+      bodyPreview: text.slice(0, 500)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reachable: false,
+      message: `连接失败：${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
 function normalizeWaterPipeRequest(requestBody = {}) {
   const normalized = {
     ...requestBody,
@@ -1001,6 +1036,12 @@ async function route(req, res) {
     if (req.method === "POST" && url.pathname === "/api/seedance/test") {
       const payload = await readJson(req);
       const result = await testWaterPipeConnection(payload.config || {});
+      sendJson(res, 200, result);
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/image2/test") {
+      const payload = await readJson(req);
+      const result = await testImage2Connection(payload.config || {});
       sendJson(res, 200, result);
       return;
     }

@@ -122,9 +122,16 @@ const state = {
   activeInput: null,
   responseLog: [],
   ui: {
-    configCollapsed: false,
     nodeMenuOpen: false,
-    connectingFrom: ""
+    connectingFrom: "",
+    connectionPreview: null,
+    contextMenu: {
+      open: false,
+      x: 0,
+      y: 0,
+      canvasX: 180,
+      canvasY: 150
+    }
   }
 };
 
@@ -135,20 +142,15 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
 const els = {
   studioLayout: $("#studioLayout"),
-  configPanel: $("#configPanel"),
   serverState: $("#serverState"),
-  apiKey: $("#apiKey"),
-  createEndpoint: $("#createEndpoint"),
-  pollEndpoint: $("#pollEndpoint"),
-  modelName: $("#modelName"),
-  wpTitle: $("#wpTitle"),
-  extraHeaders: $("#extraHeaders"),
-  toggleConfigBtn: $("#toggleConfigBtn"),
-  expandConfigBtn: $("#expandConfigBtn"),
   apiManagerBtn: $("#apiManagerBtn"),
   apiOverlay: $("#apiOverlay"),
   closeApiManagerBtn: $("#closeApiManagerBtn"),
   saveApiConfigBtn: $("#saveApiConfigBtn"),
+  testSeedanceApiBtn: $("#testSeedanceApiBtn"),
+  seedanceApiTestResult: $("#seedanceApiTestResult"),
+  testImage2ApiBtn: $("#testImage2ApiBtn"),
+  image2ApiTestResult: $("#image2ApiTestResult"),
   image2ApiKey: $("#image2ApiKey"),
   image2Endpoint: $("#image2Endpoint"),
   image2ModelName: $("#image2ModelName"),
@@ -160,8 +162,6 @@ const els = {
   apiSeedanceModelName: $("#apiSeedanceModelName"),
   apiSeedanceWpTitle: $("#apiSeedanceWpTitle"),
   apiSeedanceExtraHeaders: $("#apiSeedanceExtraHeaders"),
-  testApiBtn: $("#testApiBtn"),
-  apiTestResult: $("#apiTestResult"),
   newCanvasBtn: $("#newCanvasBtn"),
   addNodeMenuBtn: $("#addNodeMenuBtn"),
   nodeAddMenu: $("#nodeAddMenu"),
@@ -179,6 +179,7 @@ const els = {
   canvasTabs: $("#canvasTabs"),
   canvasViewport: $("#canvasViewport"),
   canvasBoard: $("#canvasBoard"),
+  canvasContextMenu: $("#canvasContextMenu"),
   emptyState: $("#emptyState"),
   inspectorEmpty: $("#inspectorEmpty"),
   selectedNodeLabel: $("#selectedNodeLabel"),
@@ -288,24 +289,6 @@ function escapeHtml(input) {
     .replace(/"/g, "&quot;");
 }
 
-function updateConfigFromInputs() {
-  state.config.apiKey = els.apiKey.value;
-  state.config.createEndpoint = els.createEndpoint.value.trim();
-  state.config.pollEndpoint = els.pollEndpoint.value.trim();
-  state.config.model = els.modelName.value.trim() || "seedance-2-0";
-  state.config.wpTitle = els.wpTitle.value.trim() || "demo-app";
-  state.config.extraHeaders = els.extraHeaders.value.trim();
-}
-
-function syncConfigInputs() {
-  els.apiKey.value = state.config.apiKey || "";
-  els.createEndpoint.value = state.config.createEndpoint;
-  els.pollEndpoint.value = state.config.pollEndpoint;
-  els.modelName.value = state.config.model;
-  els.wpTitle.value = state.config.wpTitle;
-  els.extraHeaders.value = state.config.extraHeaders;
-}
-
 function syncApiManagerInputs() {
   if (!els.apiOverlay) return;
   els.apiSeedanceKey.value = state.config.apiKey || "";
@@ -339,7 +322,17 @@ function saveWorkspace(showMessage = false) {
   const snapshot = {
     ...state,
     activeInput: null,
-    responseLog: []
+    responseLog: [],
+    ui: {
+      ...state.ui,
+      nodeMenuOpen: false,
+      connectingFrom: "",
+      connectionPreview: null,
+      contextMenu: {
+        ...(state.ui.contextMenu || {}),
+        open: false
+      }
+    }
   };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
   if (showMessage) pushResponse("workspace.saved", { canvases: state.canvases.length });
@@ -390,7 +383,6 @@ function ensureWorkspace() {
 }
 
 function render() {
-  syncConfigInputs();
   renderCanvasTabs();
   renderCanvas();
   renderInspector();
@@ -402,10 +394,12 @@ function render() {
 }
 
 function applyUiState() {
-  els.studioLayout.classList.toggle("config-collapsed", Boolean(state.ui.configCollapsed));
-  els.toggleConfigBtn.textContent = state.ui.configCollapsed ? "›" : "‹";
-  els.toggleConfigBtn.title = state.ui.configCollapsed ? "展开模型配置" : "折叠模型配置";
   if (els.nodeAddMenu) els.nodeAddMenu.hidden = !state.ui.nodeMenuOpen;
+  if (els.canvasContextMenu) {
+    els.canvasContextMenu.hidden = !state.ui.contextMenu?.open;
+    els.canvasContextMenu.style.left = `${state.ui.contextMenu?.x || 0}px`;
+    els.canvasContextMenu.style.top = `${state.ui.contextMenu?.y || 0}px`;
+  }
 }
 
 function renderCanvasTabs() {
@@ -425,6 +419,7 @@ function applyCanvasTransform() {
 function renderCanvas() {
   const canvas = getActiveCanvas();
   els.emptyState.style.display = canvas.nodes.length ? "none" : "grid";
+  els.canvasBoard.classList.toggle("is-connecting", Boolean(state.ui.connectingFrom));
   els.canvasBoard.innerHTML = `${renderConnections(canvas)}${canvas.nodes.map(renderCanvasNode).join("")}`;
   const selectedNode = getSelectedNode();
   els.duplicateNodeBtn.disabled = !selectedNode || (selectedNode.type !== "seedance-input" && selectedNode.type !== "image2-input");
@@ -432,24 +427,55 @@ function renderCanvas() {
   applyCanvasTransform();
 }
 
+function outputAnchor(node) {
+  return {
+    x: node.x + nodeWidth(node),
+    y: node.y + 118
+  };
+}
+
+function inputAnchor(node) {
+  return {
+    x: node.x,
+    y: node.y + 118
+  };
+}
+
+function bezierPath(from, to) {
+  const dx = Math.max(80, Math.abs(to.x - from.x) * 0.45);
+  return `M ${from.x} ${from.y} C ${from.x + dx} ${from.y}, ${to.x - dx} ${to.y}, ${to.x} ${to.y}`;
+}
+
 function renderConnections(canvas) {
   const connections = canvas.connections || [];
-  if (!connections.length) return "";
+  const previewSource = state.ui.connectingFrom ? canvas.nodes.find((node) => node.id === state.ui.connectingFrom) : null;
+  const previewTarget = previewSource && state.ui.connectionPreview
+    ? state.ui.connectionPreview
+    : previewSource ? outputAnchor(previewSource) : null;
   const paths = connections.map((connection) => {
     const source = canvas.nodes.find((node) => node.id === connection.from);
     const target = canvas.nodes.find((node) => node.id === connection.to);
     if (!source || !target) return "";
-    const sourceWidth = source.type === "video-result" ? 360 : 344;
-    const targetWidth = target.type === "video-result" ? 360 : 344;
-    const x1 = source.x + sourceWidth;
-    const y1 = source.y + 118;
-    const x2 = target.x;
-    const y2 = target.y + 118;
-    const dx = Math.max(80, Math.abs(x2 - x1) * 0.45);
-    const path = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
-    return `<path class="connection-path" d="${path}" />`;
+    return `<path class="connection-path" d="${bezierPath(outputAnchor(source), inputAnchor(target))}" />`;
   }).join("");
-  return `<svg class="connection-layer" width="2200" height="1400" viewBox="0 0 2200 1400" aria-hidden="true">${paths}</svg>`;
+  const previewPath = previewSource
+    ? `<path class="connection-path connection-preview-path" d="${bezierPath(outputAnchor(previewSource), previewTarget)}" />`
+    : "";
+  return `<svg class="connection-layer" aria-hidden="true">${paths}${previewPath}</svg>`;
+}
+
+function renderConnectionsOnly() {
+  const current = els.canvasBoard.querySelector(".connection-layer");
+  const nextHtml = renderConnections(getActiveCanvas());
+  if (!nextHtml) {
+    current?.remove();
+    return;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = nextHtml;
+  const next = template.content.firstElementChild;
+  if (current) current.replaceWith(next);
+  else els.canvasBoard.prepend(next);
 }
 
 function countAssets(node) {
@@ -524,6 +550,20 @@ function renderPort(node, field, label, detail) {
   `;
 }
 
+function nodeWidth(node) {
+  return node?.type === "video-result" || node?.type === "image-result" ? 360 : 344;
+}
+
+function connectionClass(node) {
+  if (!state.ui.connectingFrom) return "";
+  if (state.ui.connectingFrom === node.id) return " connection-source";
+  return " connection-candidate";
+}
+
+function renderNodeConnector() {
+  return `<button class="node-connector" type="button" data-action="connector" title="连接节点" aria-label="连接节点">+</button>`;
+}
+
 function renderCanvasNode(node) {
   if (node.type === "video-result") return renderResultCanvasNode(node);
   if (node.type === "image-result") return renderImageResultCanvasNode(node);
@@ -536,7 +576,7 @@ function renderSeedanceCanvasNode(node) {
   const counts = countAssets(node);
   const promptText = node.prompt || "Prompt is empty";
   return `
-    <article class="node${selected}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
+    <article class="node${selected}${connectionClass(node)}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
       <div class="node-head" data-drag-handle="true">
         <div>
           <strong>${escapeHtml(node.title)}</strong>
@@ -545,6 +585,7 @@ function renderSeedanceCanvasNode(node) {
         <span class="node-model">${escapeHtml(state.config.model)}</span>
         <button class="node-delete" type="button" data-action="delete-node" title="删除节点">x</button>
       </div>
+      ${renderNodeConnector(node)}
       <div class="node-body">
         <button class="input-port prompt" type="button" data-input-field="prompt">
           <strong>Prompt / text 必填</strong>
@@ -564,7 +605,6 @@ function renderSeedanceCanvasNode(node) {
         <div class="node-actions">
           <button type="button" data-action="create-task">创建任务</button>
           <button class="ghost-btn" type="button" data-action="poll-task" ${node.lastTaskId ? "" : "disabled"}>轮询</button>
-          <button class="ghost-btn" type="button" data-action="connect-node">${state.ui.connectingFrom ? "接入" : "连接"}</button>
         </div>
       </div>
     </article>
@@ -576,7 +616,7 @@ function renderImage2CanvasNode(node) {
   const promptText = node.prompt || "Prompt is empty";
   const outputHint = node.referenceImageUrl ? "已设置参考图" : "可接上游图片";
   return `
-    <article class="node image2-node${selected}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
+    <article class="node image2-node${selected}${connectionClass(node)}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
       <div class="node-head" data-drag-handle="true">
         <div>
           <strong>${escapeHtml(node.title)}</strong>
@@ -585,6 +625,7 @@ function renderImage2CanvasNode(node) {
         <span class="node-model">${escapeHtml(state.image2Config.model || "gpt-image-2")}</span>
         <button class="node-delete" type="button" data-action="delete-node" title="删除节点">x</button>
       </div>
+      ${renderNodeConnector(node)}
       <div class="node-body">
         <button class="input-port prompt" type="button" data-input-field="prompt">
           <strong>Prompt / image text</strong>
@@ -597,14 +638,9 @@ function renderImage2CanvasNode(node) {
             <strong>图片参数</strong>
             <span>${node.params.size} / ${node.params.quality} / ${node.params.output_format}</span>
           </button>
-          <button class="input-port" type="button" data-action="connect-node">
-            <strong>连接节点</strong>
-            <span>${state.ui.connectingFrom ? "接入当前节点" : "作为输出源"}</span>
-          </button>
         </div>
         <div class="node-actions">
           <button type="button" data-action="create-task">生成图片</button>
-          <button class="ghost-btn" type="button" data-action="connect-node">连接</button>
         </div>
       </div>
     </article>
@@ -631,7 +667,7 @@ function renderResultCanvasNode(node) {
     ? `<div class="result-suggestions">${suggestions.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>`
     : "";
   return `
-    <article class="node result-node${selected}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
+    <article class="node result-node${selected}${connectionClass(node)}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
       <div class="node-head" data-drag-handle="true">
         <div>
           <strong>${escapeHtml(node.title || "视频结果")}</strong>
@@ -640,6 +676,7 @@ function renderResultCanvasNode(node) {
         <span class="status-pill status-${escapeHtml(status)}">${escapeHtml(statusText(status))}</span>
         <button class="node-delete" type="button" data-action="delete-node" title="删除节点">x</button>
       </div>
+      ${renderNodeConnector(node)}
       <div class="node-body">
         ${renderResultPreview(node, status, videoUrl, playable)}
         ${errorBlock}
@@ -647,7 +684,6 @@ function renderResultCanvasNode(node) {
         ${node.lastFrameImage ? `<div class="last-frame-link">尾帧: ${escapeHtml(node.lastFrameImage)}</div>` : ""}
         <div class="node-actions">
           <button class="ghost-btn" type="button" data-action="poll-result" ${node.taskId ? "" : "disabled"}>轮询</button>
-          <button class="ghost-btn" type="button" data-action="connect-node">${state.ui.connectingFrom ? "接入" : "连接"}</button>
           ${playable ? `<a class="open-link" href="${escapeHtml(videoUrl)}" target="_blank" rel="noreferrer">打开视频</a>` : ""}
         </div>
       </div>
@@ -660,7 +696,7 @@ function renderImageResultCanvasNode(node) {
   const status = node.status || "succeeded";
   const imageUrl = node.imageUrl || "";
   return `
-    <article class="node result-node image-result-node${selected}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
+    <article class="node result-node image-result-node${selected}${connectionClass(node)}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
       <div class="node-head" data-drag-handle="true">
         <div>
           <strong>${escapeHtml(node.title || "图片结果")}</strong>
@@ -669,10 +705,10 @@ function renderImageResultCanvasNode(node) {
         <span class="status-pill status-${escapeHtml(status)}">${escapeHtml(statusText(status))}</span>
         <button class="node-delete" type="button" data-action="delete-node" title="删除节点">x</button>
       </div>
+      ${renderNodeConnector(node)}
       <div class="node-body">
         ${imageUrl ? `<img class="image-preview" src="${escapeHtml(imageUrl)}" alt="generated image" />` : `<div class="result-empty"><strong>${escapeHtml(statusText(status))}</strong><span>Waiting for image URL</span></div>`}
         <div class="node-actions">
-          <button class="ghost-btn" type="button" data-action="connect-node">连接</button>
           ${imageUrl ? `<a class="open-link" href="${escapeHtml(imageUrl)}" target="_blank" rel="noreferrer">打开图片</a>` : ""}
         </div>
       </div>
@@ -1319,7 +1355,6 @@ async function apiJson(path, payload) {
 }
 
 function buildRuntimeConfig() {
-  updateConfigFromInputs();
   return {
     ...state.config,
     mode: state.config.apiKey ? "api" : "mock"
@@ -1457,27 +1492,63 @@ function createImageResultNode(sourceNode, payload) {
   return resultNode;
 }
 
+function clientToCanvas(clientX, clientY) {
+  const canvas = getActiveCanvas();
+  const rect = els.canvasViewport.getBoundingClientRect();
+  return {
+    x: (clientX - rect.left - canvas.view.panX) / canvas.view.zoom,
+    y: (clientY - rect.top - canvas.view.panY) / canvas.view.zoom
+  };
+}
+
+function viewportCenterCanvasPoint() {
+  const rect = els.canvasViewport.getBoundingClientRect();
+  return clientToCanvas(rect.left + rect.width / 2, rect.top + rect.height / 2);
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function testApiConnection() {
-  updateConfigFromInputs();
-  els.testApiBtn.disabled = true;
-  els.testApiBtn.textContent = "测试中";
-  els.apiTestResult.className = "hint-text";
+async function testSeedanceApiConnection() {
+  updateApiConfigsFromManager();
+  els.testSeedanceApiBtn.disabled = true;
+  els.testSeedanceApiBtn.textContent = "测试中";
+  els.seedanceApiTestResult.className = "hint-text";
   try {
     const result = await apiJson("/api/seedance/test", { config: { ...state.config, mode: state.config.apiKey ? "api" : "mock" } });
-    els.apiTestResult.textContent = result.message || "连通性测试完成。";
-    els.apiTestResult.className = result.ok ? "hint-text api-result ok" : "hint-text api-result error";
+    els.seedanceApiTestResult.textContent = result.message || "连通性测试完成。";
+    els.seedanceApiTestResult.className = result.ok ? "hint-text api-result ok" : "hint-text api-result error";
     pushResponse("seedance.test", result);
   } catch (error) {
-    els.apiTestResult.textContent = error.message;
-    els.apiTestResult.className = "hint-text api-result error";
+    els.seedanceApiTestResult.textContent = error.message;
+    els.seedanceApiTestResult.className = "hint-text api-result error";
     pushResponse("seedance.test.error", { error: error.message });
   } finally {
-    els.testApiBtn.disabled = false;
-    els.testApiBtn.textContent = "测试连通性";
+    els.testSeedanceApiBtn.disabled = false;
+    els.testSeedanceApiBtn.textContent = "测试连通性";
+    saveWorkspace();
+  }
+}
+
+async function testImage2ApiConnection() {
+  updateApiConfigsFromManager();
+  els.testImage2ApiBtn.disabled = true;
+  els.testImage2ApiBtn.textContent = "测试中";
+  els.image2ApiTestResult.className = "hint-text";
+  try {
+    const result = await apiJson("/api/image2/test", { config: { ...state.image2Config, mode: state.image2Config.apiKey ? "api" : "mock" } });
+    els.image2ApiTestResult.textContent = result.message || "连通性测试完成。";
+    els.image2ApiTestResult.className = result.ok ? "hint-text api-result ok" : "hint-text api-result error";
+    pushResponse("image2.test", result);
+  } catch (error) {
+    els.image2ApiTestResult.textContent = error.message;
+    els.image2ApiTestResult.className = "hint-text api-result error";
+    pushResponse("image2.test.error", { error: error.message });
+  } finally {
+    els.testImage2ApiBtn.disabled = false;
+    els.testImage2ApiBtn.textContent = "测试连通性";
+    saveWorkspace();
   }
 }
 
@@ -1612,26 +1683,55 @@ function addCanvas() {
   render();
 }
 
-function addSeedanceNode() {
+function addSeedanceNode(position = null) {
   const canvas = getActiveCanvas();
   const offset = canvas.nodes.length * 32;
-  const node = defaultNode(160 + offset, 140 + offset);
+  const point = position || viewportCenterCanvasPoint();
+  const node = defaultNode(point.x + (position ? 0 : offset), point.y + (position ? 0 : offset));
   node.title = `Seedance 节点 ${canvas.nodes.length + 1}`;
   canvas.nodes.push(node);
   state.selectedNodeId = node.id;
   state.ui.nodeMenuOpen = false;
+  closeCanvasContextMenu();
   render();
 }
 
-function addImage2Node() {
+function addImage2Node(position = null) {
   const canvas = getActiveCanvas();
   const offset = canvas.nodes.length * 32;
-  const node = defaultImage2Node(160 + offset, 140 + offset);
+  const point = position || viewportCenterCanvasPoint();
+  const node = defaultImage2Node(point.x + (position ? 0 : offset), point.y + (position ? 0 : offset));
   node.title = `Image2 节点 ${canvas.nodes.length + 1}`;
   canvas.nodes.push(node);
   state.selectedNodeId = node.id;
   state.ui.nodeMenuOpen = false;
+  closeCanvasContextMenu();
   render();
+}
+
+function addNodeByType(type, position = null) {
+  if (type === "image2") addImage2Node(position);
+  else addSeedanceNode(position);
+}
+
+function openCanvasContextMenu(clientX, clientY) {
+  const rect = els.canvasViewport.getBoundingClientRect();
+  const point = clientToCanvas(clientX, clientY);
+  state.ui.contextMenu = {
+    open: true,
+    x: Math.min(Math.max(clientX - rect.left, 8), Math.max(8, rect.width - 196)),
+    y: Math.min(Math.max(clientY - rect.top, 8), Math.max(8, rect.height - 112)),
+    canvasX: point.x,
+    canvasY: point.y
+  };
+  state.ui.nodeMenuOpen = false;
+  applyUiState();
+}
+
+function closeCanvasContextMenu() {
+  if (!state.ui.contextMenu?.open) return;
+  state.ui.contextMenu.open = false;
+  applyUiState();
 }
 
 function duplicateNode() {
@@ -1652,7 +1752,12 @@ function duplicateNode() {
 function connectNodes(fromId, toId) {
   if (!fromId || !toId || fromId === toId) return;
   const canvas = getActiveCanvas();
-  if ((canvas.connections || []).some((connection) => connection.from === fromId && connection.to === toId)) return;
+  if ((canvas.connections || []).some((connection) => connection.from === fromId && connection.to === toId)) {
+    state.ui.connectingFrom = "";
+    state.ui.connectionPreview = null;
+    renderCanvas();
+    return;
+  }
   const source = canvas.nodes.find((node) => node.id === fromId);
   const target = canvas.nodes.find((node) => node.id === toId);
   if (!source || !target) return;
@@ -1664,17 +1769,60 @@ function connectNodes(fromId, toId) {
     mapping: options[0]?.value || ""
   });
   state.ui.connectingFrom = "";
+  state.ui.connectionPreview = null;
   state.selectedNodeId = toId;
   render();
 }
 
+function startConnection(nodeId) {
+  const node = getNodeById(nodeId);
+  if (!node) return;
+  state.ui.connectingFrom = nodeId;
+  state.ui.connectionPreview = outputAnchor(node);
+  state.selectedNodeId = nodeId;
+  closeCanvasContextMenu();
+  renderCanvas();
+  renderInspector();
+  renderRequestPreview();
+}
+
+function cancelConnection() {
+  if (!state.ui.connectingFrom) return;
+  state.ui.connectingFrom = "";
+  state.ui.connectionPreview = null;
+  renderCanvas();
+}
+
 function handleConnectClick(nodeId) {
   if (!state.ui.connectingFrom) {
-    state.ui.connectingFrom = nodeId;
-    renderCanvas();
+    startConnection(nodeId);
+    return;
+  }
+  if (state.ui.connectingFrom === nodeId) {
+    cancelConnection();
     return;
   }
   connectNodes(state.ui.connectingFrom, nodeId);
+}
+
+function updateConnectionPreview(event) {
+  if (!state.ui.connectingFrom) return;
+  const canvas = getActiveCanvas();
+  const source = canvas.nodes.find((node) => node.id === state.ui.connectingFrom);
+  if (!source) {
+    cancelConnection();
+    return;
+  }
+  const point = clientToCanvas(event.clientX, event.clientY);
+  const element = document.elementFromPoint(event.clientX, event.clientY);
+  const targetEl = element?.closest?.(".node");
+  const targetNode = targetEl ? canvas.nodes.find((node) => node.id === targetEl.dataset.nodeId) : null;
+  const snapTarget = targetNode && targetNode.id !== source.id ? inputAnchor(targetNode) : null;
+  state.ui.connectionPreview = snapTarget || point;
+  els.canvasBoard.querySelectorAll(".node.connection-hot").forEach((nodeEl) => nodeEl.classList.remove("connection-hot"));
+  if (targetEl && targetNode?.id !== source.id) targetEl.classList.add("connection-hot");
+  const path = els.canvasBoard.querySelector(".connection-preview-path");
+  if (path) path.setAttribute("d", bezierPath(outputAnchor(source), state.ui.connectionPreview));
 }
 
 function deleteNode(nodeId = state.selectedNodeId) {
@@ -1720,47 +1868,31 @@ function closeApiManager() {
 }
 
 function bindStaticEvents() {
-  [els.apiKey, els.createEndpoint, els.pollEndpoint, els.modelName, els.wpTitle, els.extraHeaders].forEach((input) => {
-    input.addEventListener("input", () => {
-      updateConfigFromInputs();
-      renderCanvas();
-      renderRequestPreview();
-      saveWorkspace();
-    });
-  });
-
   els.addNodeMenuBtn.addEventListener("click", () => {
     state.ui.nodeMenuOpen = !state.ui.nodeMenuOpen;
     els.nodeAddMenu.hidden = !state.ui.nodeMenuOpen;
   });
-  els.toggleConfigBtn.addEventListener("click", () => {
-    state.ui.configCollapsed = !state.ui.configCollapsed;
-    applyUiState();
-    saveWorkspace();
-  });
-  els.expandConfigBtn.addEventListener("click", () => {
-    state.ui.configCollapsed = false;
-    applyUiState();
-    saveWorkspace();
-  });
-  els.testApiBtn.addEventListener("click", testApiConnection);
   els.apiManagerBtn.addEventListener("click", openApiManager);
   els.closeApiManagerBtn.addEventListener("click", closeApiManager);
   els.apiOverlay.addEventListener("click", (event) => {
     if (event.target === els.apiOverlay) closeApiManager();
   });
+  els.testSeedanceApiBtn.addEventListener("click", testSeedanceApiConnection);
+  els.testImage2ApiBtn.addEventListener("click", testImage2ApiConnection);
   els.saveApiConfigBtn.addEventListener("click", () => {
     updateApiConfigsFromManager();
-    syncConfigInputs();
     renderCanvas();
     renderRequestPreview();
     saveWorkspace(true);
     closeApiManager();
   });
   els.newCanvasBtn.addEventListener("click", addCanvas);
-  els.addSeedanceNodeBtn.addEventListener("click", addSeedanceNode);
-  els.addImage2NodeBtn.addEventListener("click", addImage2Node);
-  els.emptyAddNodeBtn.addEventListener("click", addSeedanceNode);
+  els.addSeedanceNodeBtn.addEventListener("click", () => addSeedanceNode());
+  els.addImage2NodeBtn.addEventListener("click", () => addImage2Node());
+  els.emptyAddNodeBtn.addEventListener("click", () => {
+    const rect = els.canvasViewport.getBoundingClientRect();
+    openCanvasContextMenu(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  });
   els.duplicateNodeBtn.addEventListener("click", duplicateNode);
   els.deleteNodeBtn.addEventListener("click", () => deleteNode());
   els.zoomInBtn.addEventListener("click", () => setZoom(getActiveCanvas().view.zoom * 1.15));
@@ -1785,6 +1917,21 @@ function bindStaticEvents() {
   els.inputOverlay.addEventListener("click", (event) => {
     if (event.target === els.inputOverlay) closeInputSheet();
   });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      cancelConnection();
+      closeCanvasContextMenu();
+      state.ui.nodeMenuOpen = false;
+      applyUiState();
+    }
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".node-add-menu")) {
+      state.ui.nodeMenuOpen = false;
+      applyUiState();
+    }
+    if (!event.target.closest(".canvas-context-menu")) closeCanvasContextMenu();
+  });
 
   els.canvasTabs.addEventListener("click", (event) => {
     const button = event.target.closest("[data-canvas-id]");
@@ -1802,10 +1949,30 @@ function bindCanvasEvents() {
   let nodeDrag = null;
   let panDrag = null;
 
+  els.canvasContextMenu.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-context-add]");
+    if (!button) return;
+    event.stopPropagation();
+    addNodeByType(button.dataset.contextAdd, {
+      x: state.ui.contextMenu.canvasX,
+      y: state.ui.contextMenu.canvasY
+    });
+  });
+
   els.canvasBoard.addEventListener("click", (event) => {
     const nodeEl = event.target.closest(".node");
     if (!nodeEl) return;
     const nodeId = nodeEl.dataset.nodeId;
+    if (event.target.closest("[data-action='connector']")) {
+      event.stopPropagation();
+      handleConnectClick(nodeId);
+      return;
+    }
+    if (state.ui.connectingFrom && nodeId !== state.ui.connectingFrom) {
+      event.stopPropagation();
+      connectNodes(state.ui.connectingFrom, nodeId);
+      return;
+    }
     if (event.target.closest("[data-action='delete-node']")) {
       event.stopPropagation();
       deleteNode(nodeId);
@@ -1869,15 +2036,17 @@ function bindCanvasEvents() {
   });
 
   els.canvasBoard.addEventListener("pointermove", (event) => {
+    if (state.ui.connectingFrom) updateConnectionPreview(event);
     if (!nodeDrag) return;
     const canvas = getActiveCanvas();
     const node = canvas.nodes.find((item) => item.id === nodeDrag.nodeId);
     const nodeEl = els.canvasBoard.querySelector(`[data-node-id="${nodeDrag.nodeId}"]`);
     if (!node || !nodeEl) return;
-    node.x = Math.max(20, nodeDrag.originalX + (event.clientX - nodeDrag.startX) / canvas.view.zoom);
-    node.y = Math.max(20, nodeDrag.originalY + (event.clientY - nodeDrag.startY) / canvas.view.zoom);
+    node.x = nodeDrag.originalX + (event.clientX - nodeDrag.startX) / canvas.view.zoom;
+    node.y = nodeDrag.originalY + (event.clientY - nodeDrag.startY) / canvas.view.zoom;
     nodeEl.style.left = `${node.x}px`;
     nodeEl.style.top = `${node.y}px`;
+    renderConnectionsOnly();
   });
 
   els.canvasBoard.addEventListener("pointerup", () => {
@@ -1887,7 +2056,13 @@ function bindCanvasEvents() {
   });
 
   els.canvasViewport.addEventListener("pointerdown", (event) => {
+    if (event.target.closest(".canvas-context-menu")) return;
     if (event.target.closest(".node")) return;
+    closeCanvasContextMenu();
+    if (state.ui.connectingFrom) {
+      cancelConnection();
+      return;
+    }
     panDrag = {
       startX: event.clientX,
       startY: event.clientY,
@@ -1899,6 +2074,7 @@ function bindCanvasEvents() {
   });
 
   els.canvasViewport.addEventListener("pointermove", (event) => {
+    if (state.ui.connectingFrom) updateConnectionPreview(event);
     if (!panDrag) return;
     const view = getActiveCanvas().view;
     view.panX = panDrag.originalPanX + event.clientX - panDrag.startX;
@@ -1918,6 +2094,12 @@ function bindCanvasEvents() {
     const factor = event.deltaY > 0 ? 0.9 : 1.1;
     setZoom(getActiveCanvas().view.zoom * factor, event.clientX, event.clientY);
   }, { passive: false });
+
+  els.canvasViewport.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    cancelConnection();
+    openCanvasContextMenu(event.clientX, event.clientY);
+  });
 }
 
 async function checkServer() {
