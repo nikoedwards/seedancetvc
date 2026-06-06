@@ -1,4 +1,10 @@
 const STORAGE_KEY = "seedance-canvas-workspace-v2";
+const STORAGE_META_KEY = `${STORAGE_KEY}:meta`;
+const DB_NAME = "seedance-canvas-local";
+const DB_VERSION = 1;
+const DB_STORE = "workspace";
+const WORKSPACE_RECORD_ID = "current";
+const LOCAL_STORAGE_FALLBACK_LIMIT = 1400000;
 
 const DEFAULT_CONFIG = {
   createEndpoint: "https://agent-api.shuiditech.com/api/v1/contents/generations/tasks",
@@ -191,6 +197,12 @@ const els = {
   createTaskBtn: $("#createTaskBtn"),
   pollTaskBtn: $("#pollTaskBtn"),
   responseLog: $("#responseLog"),
+  persistStorageBtn: $("#persistStorageBtn"),
+  storageStatus: $("#storageStatus"),
+  exportWorkspaceBtn: $("#exportWorkspaceBtn"),
+  importWorkspaceBtn: $("#importWorkspaceBtn"),
+  importWorkspaceInput: $("#importWorkspaceInput"),
+  exportSecretsToggle: $("#exportSecretsToggle"),
   inputOverlay: $("#inputOverlay"),
   inputSheetEyebrow: $("#inputSheetEyebrow"),
   inputSheetTitle: $("#inputSheetTitle"),
@@ -318,7 +330,7 @@ function updateApiConfigsFromManager() {
   state.image2Config.extraHeaders = els.image2ExtraHeaders.value.trim();
 }
 
-function saveWorkspace(showMessage = false) {
+function serializeWorkspace(options = {}) {
   const snapshot = {
     ...state,
     activeInput: null,
@@ -334,23 +346,123 @@ function saveWorkspace(showMessage = false) {
       }
     }
   };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+  if (!options.includeSecrets) {
+    snapshot.config = { ...snapshot.config, apiKey: "" };
+    snapshot.image2Config = { ...snapshot.image2Config, apiKey: "" };
+  }
+  return snapshot;
+}
+
+function lightweightMeta(snapshot) {
+  return {
+    version: 3,
+    savedAt: new Date().toISOString(),
+    storage: "indexeddb",
+    activeCanvasId: snapshot.activeCanvasId,
+    selectedNodeId: snapshot.selectedNodeId,
+    canvasCount: snapshot.canvases?.length || 0,
+    nodeCount: (snapshot.canvases || []).reduce((count, canvas) => count + (canvas.nodes?.length || 0), 0)
+  };
+}
+
+function openWorkspaceDb() {
+  return new Promise((resolve, reject) => {
+    if (!("indexedDB" in window)) {
+      reject(new Error("IndexedDB is not available in this browser."));
+      return;
+    }
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE, { keyPath: "id" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Failed to open IndexedDB."));
+  });
+}
+
+async function writeWorkspaceToIndexedDb(snapshot) {
+  const db = await openWorkspaceDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readwrite");
+    tx.objectStore(DB_STORE).put({
+      id: WORKSPACE_RECORD_ID,
+      snapshot,
+      savedAt: new Date().toISOString()
+    });
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error || new Error("Failed to write workspace."));
+  });
+  db.close();
+}
+
+async function readWorkspaceFromIndexedDb() {
+  const db = await openWorkspaceDb();
+  const record = await new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readonly");
+    const request = tx.objectStore(DB_STORE).get(WORKSPACE_RECORD_ID);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error || new Error("Failed to read workspace."));
+  });
+  db.close();
+  return record?.snapshot || null;
+}
+
+function saveWorkspace(showMessage = false) {
+  const snapshot = serializeWorkspace({ includeSecrets: true });
+  const meta = lightweightMeta(snapshot);
+  try {
+    localStorage.setItem(STORAGE_META_KEY, JSON.stringify(meta));
+    const raw = JSON.stringify(snapshot);
+    if (raw.length <= LOCAL_STORAGE_FALLBACK_LIMIT) {
+      localStorage.setItem(STORAGE_KEY, raw);
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  } catch (error) {
+    pushResponse("workspace.localStorage.warn", { error: error instanceof Error ? error.message : String(error) });
+  }
+  writeWorkspaceToIndexedDb(snapshot)
+    .then(updateStorageStatus)
+    .catch((error) => {
+      pushResponse("workspace.indexedDB.error", { error: error instanceof Error ? error.message : String(error) });
+      updateStorageStatus();
+    });
   if (showMessage) pushResponse("workspace.saved", { canvases: state.canvases.length });
 }
 
-function loadWorkspace() {
+function applyWorkspaceSnapshot(saved) {
+  if (!saved) return false;
+  state.config = { ...DEFAULT_CONFIG, ...(saved.config || {}) };
+  state.image2Config = { ...DEFAULT_IMAGE2_CONFIG, ...(saved.image2Config || {}) };
+  state.canvases = Array.isArray(saved.canvases) ? saved.canvases : [];
+  state.activeCanvasId = saved.activeCanvasId || "";
+  state.selectedNodeId = saved.selectedNodeId || "";
+  state.ui = {
+    ...state.ui,
+    ...(saved.ui || {}),
+    nodeMenuOpen: false,
+    connectingFrom: "",
+    connectionPreview: null,
+    contextMenu: { ...state.ui.contextMenu, open: false }
+  };
+  return true;
+}
+
+async function loadWorkspace() {
+  try {
+    const saved = await readWorkspaceFromIndexedDb();
+    if (applyWorkspaceSnapshot(saved)) return;
+  } catch (error) {
+    pushResponse("workspace.indexedDB.load.warn", { error: error instanceof Error ? error.message : String(error) });
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
-    const saved = JSON.parse(raw);
-    state.config = { ...DEFAULT_CONFIG, ...(saved.config || {}) };
-    state.image2Config = { ...DEFAULT_IMAGE2_CONFIG, ...(saved.image2Config || {}) };
-    state.canvases = Array.isArray(saved.canvases) ? saved.canvases : [];
-    state.activeCanvasId = saved.activeCanvasId || "";
-    state.selectedNodeId = saved.selectedNodeId || "";
-    state.ui = { ...state.ui, ...(saved.ui || {}) };
-  } catch {
+    applyWorkspaceSnapshot(JSON.parse(raw));
+  } catch (error) {
     state.canvases = [];
+    pushResponse("workspace.localStorage.load.warn", { error: error instanceof Error ? error.message : String(error) });
   }
 }
 
@@ -1082,7 +1194,7 @@ function renderInputSheet() {
     <p class="hint-text">${escapeHtml(meta.description)}</p>
     <div id="dropZone" class="drop-zone">
       <strong>拖拽${escapeHtml(meta.typeLabel)}到这里</strong>
-      <span>也可以点击按钮从本地上传，上传后会生成本地 URL。</span>
+      <span>本地文件会保存到浏览器缓存；真实 API 若要求公网资源，请粘贴互联网 URL。</span>
       <input id="assetFileInput" type="file" ${meta.single ? "" : "multiple"} accept="${escapeHtml(meta.accept)}" hidden />
       <button id="pickFileBtn" class="ghost-btn" type="button">选择本地文件</button>
     </div>
@@ -1135,19 +1247,23 @@ function bindAssetSheet(meta, node, field) {
 
 async function uploadAndAttachFiles(files, node, field, meta) {
   if (!files.length) return;
-  const form = new FormData();
-  for (const file of files) form.append("files", file);
-  const response = await fetch("/api/assets", { method: "POST", body: form });
-  const data = await response.json();
-  if (!response.ok || data.error) {
-    pushResponse("asset.upload.error", { error: data.error || `Upload failed: ${response.status}` });
-    return;
-  }
-  const uploadedUrls = (data.assets || []).map((asset) => asset.url);
+  const uploadedUrls = await Promise.all(files.map(fileToDataUrl));
   const urls = getFieldUrls(node, field);
   setFieldUrls(node, field, meta.single ? uploadedUrls.slice(0, 1) : [...urls, ...uploadedUrls]);
-  pushResponse("asset.upload", data);
+  pushResponse("asset.local", {
+    files: files.map((file) => ({ name: file.name, type: file.type, size: file.size })),
+    note: "本地文件已写入浏览器缓存；如真实 API 不支持 data URL，请改用公网 URL。"
+  });
   afterInputMutation(node, field);
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Failed to read file."));
+    reader.readAsDataURL(file);
+  });
 }
 
 function afterInputMutation(node, field) {
@@ -1168,7 +1284,7 @@ function renderAssetList(node, field) {
   }
   list.innerHTML = urls.map((url, index) => `
     <div class="asset-row">
-      <code title="${escapeHtml(url)}">${escapeHtml(url)}</code>
+      <code title="${escapeHtml(compactDisplayValue(url))}">${escapeHtml(compactDisplayValue(url))}</code>
       <button class="ghost-btn" type="button" data-remove-url="${index}">移除</button>
     </div>
   `).join("");
@@ -1286,13 +1402,13 @@ function renderRequestPreview() {
     els.requestPreview.textContent = JSON.stringify({
       taskId: node.taskId,
       status: node.status,
-      videoUrl: node.videoUrl,
-      imageUrl: node.imageUrl,
-      lastFrameImage: node.lastFrameImage,
+      videoUrl: compactDisplayValue(node.videoUrl),
+      imageUrl: compactDisplayValue(node.imageUrl),
+      lastFrameImage: compactDisplayValue(node.lastFrameImage),
       errorMessage: node.errorMessage,
       errorDetails: node.errorDetails,
       usage: node.usage,
-      raw: node.raw
+      raw: sanitizeForDisplay(node.raw)
     }, null, 2);
     els.validationBox.innerHTML = `<div class="validation-item">Video result node. Poll it from the canvas to refresh status.</div>`;
     els.copyRequestBtn.disabled = false;
@@ -1328,7 +1444,7 @@ function renderRequestPreview() {
 }
 
 function pushResponse(label, payload) {
-  state.responseLog.unshift({ time: new Date().toLocaleTimeString(), label, payload });
+  state.responseLog.unshift({ time: new Date().toLocaleTimeString(), label, payload: sanitizeForDisplay(payload) });
   state.responseLog = state.responseLog.slice(0, 12);
   renderResponseLog();
 }
@@ -1339,19 +1455,363 @@ function renderResponseLog() {
     .join("\n\n");
 }
 
-async function apiJson(path, payload) {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.error) {
-    const error = new Error(data.error || `Request failed: ${response.status}`);
-    error.payload = data;
-    throw error;
+function compactDisplayValue(value) {
+  if (typeof value !== "string") return value;
+  if (value.startsWith("data:") && value.length > 180) {
+    return `${value.slice(0, 90)}... [${Math.round(value.length / 1024)} KB data URL]`;
   }
-  return data;
+  if (value.length > 900) return `${value.slice(0, 420)}... [${value.length} chars]`;
+  return value;
+}
+
+function sanitizeForDisplay(value, depth = 0) {
+  if (value == null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return compactDisplayValue(value);
+  if (depth > 4) return "[nested object]";
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeForDisplay(item, depth + 1));
+  const output = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "b64_json" && typeof item === "string") {
+      output[key] = `[base64 omitted, ${Math.round(item.length / 1024)} KB]`;
+    } else {
+      output[key] = sanitizeForDisplay(item, depth + 1);
+    }
+  }
+  return output;
+}
+
+async function updateStorageStatus() {
+  if (!els.storageStatus) return;
+  const meta = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_META_KEY) || "{}");
+    } catch {
+      return {};
+    }
+  })();
+  const estimate = navigator.storage?.estimate ? await navigator.storage.estimate().catch(() => null) : null;
+  const persisted = navigator.storage?.persisted ? await navigator.storage.persisted().catch(() => false) : false;
+  const usedMb = estimate?.usage ? (estimate.usage / 1024 / 1024).toFixed(1) : "";
+  const quotaMb = estimate?.quota ? (estimate.quota / 1024 / 1024).toFixed(0) : "";
+  const storageText = usedMb && quotaMb ? `当前约 ${usedMb} MB / ${quotaMb} MB` : "当前浏览器支持本地项目缓存";
+  const savedText = meta.savedAt ? `上次保存 ${new Date(meta.savedAt).toLocaleString()}` : "尚未保存项目";
+  els.storageStatus.textContent = `${persisted ? "本地缓存已加固" : "本地缓存可用，建议导出备份"}。${storageText}。${savedText}。`;
+  els.serverState.textContent = persisted ? "本地缓存已加固" : "静态模式";
+  els.serverState.classList.toggle("ok", Boolean(persisted));
+}
+
+async function requestPersistentStorage() {
+  if (!navigator.storage?.persist) {
+    pushResponse("storage.persist.unsupported", { message: "当前浏览器不支持持久化授权，请使用导出项目做备份。" });
+    await updateStorageStatus();
+    return;
+  }
+  const granted = await navigator.storage.persist();
+  pushResponse("storage.persist", {
+    granted,
+    message: granted ? "浏览器已尽量保护本站点本地数据。" : "浏览器没有授予持久化权限，请定期导出项目备份。"
+  });
+  await updateStorageStatus();
+}
+
+function downloadTextFile(fileName, text, type = "application/json") {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function exportWorkspace() {
+  const includeSecrets = Boolean(els.exportSecretsToggle?.checked);
+  const payload = {
+    type: "seedance-canvas-project",
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    includesSecrets: includeSecrets,
+    workspace: serializeWorkspace({ includeSecrets })
+  };
+  const date = new Date().toISOString().slice(0, 10);
+  downloadTextFile(`seedance-project-${date}.seedance-project.json`, JSON.stringify(payload, null, 2));
+  pushResponse("workspace.exported", {
+    canvases: state.canvases.length,
+    includesSecrets: includeSecrets
+  });
+}
+
+async function importWorkspaceFile(file) {
+  if (!file) return;
+  const text = await file.text();
+  const parsed = JSON.parse(text);
+  const snapshot = parsed.workspace || parsed;
+  applyWorkspaceSnapshot(snapshot);
+  ensureWorkspace();
+  render();
+  saveWorkspace(true);
+  pushResponse("workspace.imported", {
+    canvases: state.canvases.length,
+    source: file.name
+  });
+}
+
+function parseExtraHeaders(extraHeaders) {
+  if (!extraHeaders?.trim()) return {};
+  return JSON.parse(extraHeaders);
+}
+
+function buildApiHeaders(config = {}) {
+  return {
+    "content-type": "application/json",
+    ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}),
+    ...(config.wpTitle ? { "x-wp-title": config.wpTitle } : {}),
+    ...parseExtraHeaders(config.extraHeaders || "")
+  };
+}
+
+function applyTemplate(template, values) {
+  return String(template || "").replace(/\{\{(\w+)\}\}/g, (_, key) => {
+    const value = values[key];
+    return value == null ? "" : encodeURIComponent(String(value));
+  });
+}
+
+async function readResponseJson(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
+
+function createClientError(kind, status, data) {
+  const details = parseProviderError(data);
+  const fallback = data?.error?.message || data?.error || data?.message || JSON.stringify(data);
+  const error = new Error(details.userMessage || `${kind} failed: ${status} ${fallback}`);
+  error.payload = {
+    error: error.message,
+    details,
+    upstreamStatus: status
+  };
+  return error;
+}
+
+function parseProviderError(data = {}) {
+  const gatewayError = data.error || {};
+  const metadata = gatewayError.metadata || {};
+  let rawError = null;
+  if (metadata.raw) {
+    try {
+      rawError = JSON.parse(metadata.raw)?.error || null;
+    } catch {
+      rawError = null;
+    }
+  }
+  const code = rawError?.code || gatewayError.code || "";
+  const message = rawError?.message || gatewayError.message || data.message || "";
+  const providerName = metadata.provider_name || "";
+  const privacyImageBlocked =
+    String(code).includes("InputImageSensitiveContentDetected") ||
+    /input image may contain real person/i.test(message);
+  return {
+    code,
+    message,
+    param: rawError?.param || "",
+    type: rawError?.type || "",
+    providerName,
+    userMessage: privacyImageBlocked
+      ? "输入图片触发了上游隐私/真人内容安全拦截。请换一张不含真实人物、证件、联系方式或其他隐私信息的参考图。"
+      : message,
+    suggestions: privacyImageBlocked
+      ? [
+          "删除或替换首帧、尾帧、参考图中可能出现真实人物脸部的图片。",
+          "避免上传证件、手机号、地址、聊天截图、工牌等隐私信息。",
+          "3C TVC 优先使用产品图、场景图、手部局部图，或先生成一张非真人角色图。"
+        ]
+      : [],
+    raw: data
+  };
+}
+
+function normalizeSeedanceRequest(requestBody = {}) {
+  return {
+    ...requestBody,
+    content: Array.isArray(requestBody.content)
+      ? requestBody.content.map((item) => {
+          if (item?.type !== "text") return item;
+          const { role, ...textItem } = item;
+          return textItem;
+        })
+      : requestBody.content
+  };
+}
+
+function normalizeImage2Request(requestBody = {}) {
+  const { response_format, style, input_reference, ...rest } = requestBody;
+  return rest;
+}
+
+function stripBase64Payloads(value, depth = 0) {
+  if (value == null || typeof value !== "object") return value;
+  if (depth > 8) return "[nested object]";
+  if (Array.isArray(value)) return value.map((item) => stripBase64Payloads(item, depth + 1));
+  const output = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "b64_json" && typeof item === "string") {
+      output[key] = `[base64 omitted, ${Math.round(item.length / 1024)} KB]`;
+    } else {
+      output[key] = stripBase64Payloads(item, depth + 1);
+    }
+  }
+  return output;
+}
+
+function svgDataUrl(svg) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function createMockImage2Result(requestBody = {}) {
+  const prompt = escapeHtml(String(requestBody.prompt || "Image2 mock image").slice(0, 220));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+    <rect width="1024" height="1024" fill="#111827"/>
+    <rect x="72" y="72" width="880" height="880" rx="28" fill="#f8fafc"/>
+    <circle cx="780" cy="220" r="96" fill="#f59e0b" opacity="0.88"/>
+    <path d="M112 762 C240 610 352 610 496 760 C620 890 758 848 912 668 L912 952 L112 952 Z" fill="#0f766e"/>
+    <path d="M112 650 C236 536 356 520 488 642 C620 762 744 760 912 564 L912 952 L112 952 Z" fill="#2563eb" opacity="0.75"/>
+    <text x="112" y="164" fill="#111827" font-family="Arial, sans-serif" font-size="42" font-weight="700">Image2 Mock</text>
+    <foreignObject x="112" y="214" width="760" height="260">
+      <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: Arial, sans-serif; font-size: 30px; color: #334155; line-height: 1.35;">${prompt}</div>
+    </foreignObject>
+  </svg>`;
+  return {
+    result: {
+      id: `mock-image2-${uid("task").slice(-7)}`,
+      status: "succeeded",
+      mock: true,
+      content: { image_url: svgDataUrl(svg) },
+      request: normalizeImage2Request(requestBody),
+      usage: { total_tokens: 0 }
+    }
+  };
+}
+
+async function testEndpointConnection(config = {}, endpoint) {
+  if (!config.apiKey) {
+    return {
+      ok: false,
+      mode: "mock",
+      message: "请先填写 API Key。未填写时仍可使用 Mock 预览。"
+    };
+  }
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: buildApiHeaders(config),
+      signal: AbortSignal.timeout(10000)
+    });
+    const data = await readResponseJson(response);
+    const reachable = response.status < 500;
+    return {
+      ok: reachable && response.status !== 401 && response.status !== 403,
+      reachable,
+      status: response.status,
+      message: reachable
+        ? `端点可达，HTTP ${response.status}。如果返回 404/405，通常表示服务在线但该地址只接受创建任务请求。`
+        : `端点返回 HTTP ${response.status}，请检查地址或网络。`,
+      bodyPreview: JSON.stringify(data).slice(0, 500)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reachable: false,
+      message: `连接失败：${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
+async function createSeedanceTaskDirect(requestBody) {
+  const config = buildRuntimeConfig();
+  const normalizedRequestBody = normalizeSeedanceRequest(requestBody);
+  if (config.mode === "mock") {
+    return {
+      task: {
+        id: `mock-${uid("task").slice(-10)}`,
+        status: "pending",
+        mock: true,
+        request: normalizedRequestBody
+      }
+    };
+  }
+  const response = await fetch(config.createEndpoint, {
+    method: "POST",
+    headers: buildApiHeaders(config),
+    body: JSON.stringify(normalizedRequestBody)
+  });
+  const data = await readResponseJson(response);
+  if (!response.ok) throw createClientError("Seedance create", response.status, data);
+  return { task: data };
+}
+
+async function pollSeedanceTaskDirect(taskId) {
+  const config = buildRuntimeConfig();
+  if (config.mode === "mock") {
+    return {
+      task: {
+        id: taskId,
+        status: "succeeded",
+        mock: true,
+        content: {
+          video_url: `mock://seedance/${taskId}.mp4`,
+          last_frame_image: `mock://seedance/${taskId}-last-frame.png`
+        },
+        usage: { total_tokens: 0 }
+      }
+    };
+  }
+  const endpoint = applyTemplate(config.pollEndpoint, {
+    taskId,
+    model: config.model || "seedance-2-0"
+  });
+  const response = await fetch(endpoint, {
+    method: "GET",
+    headers: buildApiHeaders(config)
+  });
+  const data = await readResponseJson(response);
+  if (!response.ok) throw createClientError("Seedance poll", response.status, data);
+  return { task: data };
+}
+
+async function createImage2Direct(requestBody) {
+  const config = buildImage2RuntimeConfig();
+  const normalizedRequestBody = normalizeImage2Request(requestBody);
+  if (config.mode === "mock") return createMockImage2Result(normalizedRequestBody);
+  const response = await fetch(config.endpoint, {
+    method: "POST",
+    headers: buildApiHeaders(config),
+    body: JSON.stringify(normalizedRequestBody)
+  });
+  const data = await readResponseJson(response);
+  if (!response.ok) throw createClientError("Image2 generate", response.status, data);
+  const b64 = data.data?.[0]?.b64_json;
+  const outputFormat = normalizedRequestBody.output_format || "png";
+  const imageUrl = b64
+    ? `data:image/${outputFormat};base64,${b64}`
+    : data.data?.[0]?.url || "";
+  return {
+    result: {
+      id: `image2-${uid("task").slice(-10)}`,
+      status: "succeeded",
+      content: { image_url: imageUrl },
+      data: stripBase64Payloads(data.data || []),
+      usage: data.usage || null,
+      raw: stripBase64Payloads(data)
+    }
+  };
 }
 
 function buildRuntimeConfig() {
@@ -1516,7 +1976,10 @@ async function testSeedanceApiConnection() {
   els.testSeedanceApiBtn.textContent = "测试中";
   els.seedanceApiTestResult.className = "hint-text";
   try {
-    const result = await apiJson("/api/seedance/test", { config: { ...state.config, mode: state.config.apiKey ? "api" : "mock" } });
+    const result = await testEndpointConnection(
+      { ...state.config, mode: state.config.apiKey ? "api" : "mock" },
+      state.config.createEndpoint
+    );
     els.seedanceApiTestResult.textContent = result.message || "连通性测试完成。";
     els.seedanceApiTestResult.className = result.ok ? "hint-text api-result ok" : "hint-text api-result error";
     pushResponse("seedance.test", result);
@@ -1537,7 +2000,10 @@ async function testImage2ApiConnection() {
   els.testImage2ApiBtn.textContent = "测试中";
   els.image2ApiTestResult.className = "hint-text";
   try {
-    const result = await apiJson("/api/image2/test", { config: { ...state.image2Config, mode: state.image2Config.apiKey ? "api" : "mock" } });
+    const result = await testEndpointConnection(
+      { ...state.image2Config, mode: state.image2Config.apiKey ? "api" : "mock" },
+      state.image2Config.endpoint
+    );
     els.image2ApiTestResult.textContent = result.message || "连通性测试完成。";
     els.image2ApiTestResult.className = result.ok ? "hint-text api-result ok" : "hint-text api-result error";
     pushResponse("image2.test", result);
@@ -1564,10 +2030,7 @@ async function createTask(nodeId = state.selectedNodeId) {
   const validation = validateNode(node, requestBody);
   if (validation.errors.length) return;
   try {
-    const result = await apiJson("/api/seedance/tasks", {
-      config: buildRuntimeConfig(),
-      requestBody
-    });
+    const result = await createSeedanceTaskDirect(requestBody);
     const taskId = extractTaskId(result);
     if (taskId) node.lastTaskId = taskId;
     const resultNode = createOrUpdateResultNode(node, result);
@@ -1592,10 +2055,7 @@ async function createImage2Task(nodeId = state.selectedNodeId) {
   const validation = validateImage2Node(node, requestBody);
   if (validation.errors.length) return;
   try {
-    const result = await apiJson("/api/image2/generate", {
-      config: buildImage2RuntimeConfig(),
-      requestBody
-    });
+    const result = await createImage2Direct(requestBody);
     const resultNode = createImageResultNode(node, result);
     state.selectedNodeId = resultNode.id;
     pushResponse("image2.generate", result);
@@ -1639,10 +2099,7 @@ async function pollResultNode(resultNodeId, options = {}) {
       const record = findNodeRecord(resultNodeId);
       if (!record?.node || record.node.type !== "video-result") return;
       const resultNode = record.node;
-      const result = await apiJson("/api/seedance/poll", {
-        config: buildRuntimeConfig(),
-        taskId: resultNode.taskId
-      });
+      const result = await pollSeedanceTaskDirect(resultNode.taskId);
       applyTaskResult(resultNode, result);
       pushResponse("seedance.poll", result);
       saveWorkspace();
@@ -1899,6 +2356,13 @@ function bindStaticEvents() {
   els.zoomOutBtn.addEventListener("click", () => setZoom(getActiveCanvas().view.zoom / 1.15));
   els.resetViewBtn.addEventListener("click", resetView);
   els.saveWorkspaceBtn.addEventListener("click", () => saveWorkspace(true));
+  els.persistStorageBtn.addEventListener("click", requestPersistentStorage);
+  els.exportWorkspaceBtn.addEventListener("click", exportWorkspace);
+  els.importWorkspaceBtn.addEventListener("click", () => els.importWorkspaceInput.click());
+  els.importWorkspaceInput.addEventListener("change", async () => {
+    await importWorkspaceFile(els.importWorkspaceInput.files?.[0]);
+    els.importWorkspaceInput.value = "";
+  });
   els.clearResponseBtn.addEventListener("click", () => {
     state.responseLog = [];
     renderResponseLog();
@@ -2102,20 +2566,17 @@ function bindCanvasEvents() {
   });
 }
 
-async function checkServer() {
-  try {
-    const response = await fetch("/api/health");
-    const health = await response.json();
-    els.serverState.textContent = health.ok ? "本地服务可用" : "服务异常";
-    els.serverState.classList.toggle("ok", Boolean(health.ok));
-  } catch {
-    els.serverState.textContent = "连接失败";
-    els.serverState.classList.add("error");
-  }
+async function init() {
+  await loadWorkspace();
+  ensureWorkspace();
+  bindStaticEvents();
+  render();
+  await updateStorageStatus();
 }
 
-loadWorkspace();
-ensureWorkspace();
-bindStaticEvents();
-render();
-checkServer();
+init().catch((error) => {
+  pushResponse("app.init.error", { error: error instanceof Error ? error.message : String(error) });
+  ensureWorkspace();
+  bindStaticEvents();
+  render();
+});

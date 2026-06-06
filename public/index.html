@@ -93,6 +93,23 @@
             <pre id="requestPreview"></pre>
           </section>
 
+          <section class="storage-section">
+            <div class="panel-head compact">
+              <h3>本地缓存</h3>
+              <button id="persistStorageBtn" class="ghost-btn" type="button">加固</button>
+            </div>
+            <p id="storageStatus" class="hint-text">正在检查浏览器本地存储。</p>
+            <label class="switch-row export-secret-row">
+              <span>导出时包含 API Key</span>
+              <input id="exportSecretsToggle" type="checkbox" />
+            </label>
+            <div class="inline-actions storage-actions">
+              <button id="exportWorkspaceBtn" class="secondary-btn" type="button">导出项目</button>
+              <button id="importWorkspaceBtn" class="ghost-btn" type="button">导入项目</button>
+              <input id="importWorkspaceInput" type="file" accept="application/json,.json,.seedance-project" hidden />
+            </div>
+          </section>
+
           <details class="compact-help inspector-help">
             <summary>输入规则</summary>
             <p>Seedance 至少需要一段 Prompt；图片输入用于首帧、尾帧或参考图；视频和音频输入用于续写、风格或节奏参考。Image2 以 Prompt 为核心，可接入上游图片作为参考图或 Mask。</p>

@@ -303,6 +303,7 @@ h3 {
 .config-card,
 .compact-help,
 .response-section,
+.storage-section,
 .param-panel,
 .request-preview {
   display: grid;
@@ -316,6 +317,21 @@ h3 {
   border-radius: 8px;
   background: linear-gradient(180deg, #ffffff, #f8fbfc);
   box-shadow: var(--shadow-sm);
+}
+
+.storage-section {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff, #f8fafc);
+}
+
+.storage-actions {
+  flex-wrap: wrap;
+}
+
+.export-secret-row {
+  min-height: 32px;
 }
 
 .card-topline {
