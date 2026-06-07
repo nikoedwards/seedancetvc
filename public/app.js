@@ -125,6 +125,7 @@ const state = {
   canvases: [],
   activeCanvasId: "",
   selectedNodeId: "",
+  selectedConnectionId: "",
   activeInput: null,
   responseLog: [],
   ui: {
@@ -270,6 +271,21 @@ function getSelectedNode() {
   return canvas?.nodes.find((node) => node.id === state.selectedNodeId) || null;
 }
 
+function getSelectedConnection() {
+  const canvas = getActiveCanvas();
+  return canvas?.connections.find((connection) => connection.id === state.selectedConnectionId) || null;
+}
+
+function selectNode(nodeId) {
+  state.selectedNodeId = nodeId || "";
+  if (nodeId) state.selectedConnectionId = "";
+}
+
+function isEditingTarget(target) {
+  const element = target instanceof Element ? target : null;
+  return Boolean(element?.closest("input, textarea, select, [contenteditable='true']"));
+}
+
 function getNodeById(nodeId) {
   const canvas = getActiveCanvas();
   return canvas?.nodes.find((node) => node.id === nodeId) || null;
@@ -362,6 +378,7 @@ function lightweightMeta(snapshot) {
     storage: "indexeddb",
     activeCanvasId: snapshot.activeCanvasId,
     selectedNodeId: snapshot.selectedNodeId,
+    selectedConnectionId: snapshot.selectedConnectionId,
     canvasCount: snapshot.canvases?.length || 0,
     nodeCount: (snapshot.canvases || []).reduce((count, canvas) => count + (canvas.nodes?.length || 0), 0)
   };
@@ -440,6 +457,7 @@ function applyWorkspaceSnapshot(saved) {
   state.canvases = Array.isArray(saved.canvases) ? saved.canvases : [];
   state.activeCanvasId = saved.activeCanvasId || "";
   state.selectedNodeId = saved.selectedNodeId || "";
+  state.selectedConnectionId = saved.selectedConnectionId || "";
   state.ui = {
     ...state.ui,
     ...(saved.ui || {}),
@@ -495,6 +513,9 @@ function ensureWorkspace() {
   if (!canvas.nodes.some((node) => node.id === state.selectedNodeId)) {
     state.selectedNodeId = canvas.nodes[0]?.id || "";
   }
+  if (!canvas.connections.some((connection) => connection.id === state.selectedConnectionId)) {
+    state.selectedConnectionId = "";
+  }
 }
 
 function render() {
@@ -537,8 +558,10 @@ function renderCanvas() {
   els.canvasBoard.classList.toggle("is-connecting", Boolean(state.ui.connectingFrom));
   els.canvasBoard.innerHTML = `${renderConnections(canvas)}${canvas.nodes.map(renderCanvasNode).join("")}`;
   const selectedNode = getSelectedNode();
+  const selectedConnection = getSelectedConnection();
   els.duplicateNodeBtn.disabled = !selectedNode || (selectedNode.type !== "seedance-input" && selectedNode.type !== "image2-input");
-  els.deleteNodeBtn.disabled = !selectedNode;
+  els.deleteNodeBtn.disabled = !selectedNode && !selectedConnection;
+  els.deleteNodeBtn.textContent = selectedConnection && !selectedNode ? "删除连线" : "删除";
   applyCanvasTransform();
 }
 
@@ -571,7 +594,22 @@ function renderConnections(canvas) {
     const source = canvas.nodes.find((node) => node.id === connection.from);
     const target = canvas.nodes.find((node) => node.id === connection.to);
     if (!source || !target) return "";
-    return `<path class="connection-path" d="${bezierPath(outputAnchor(source), inputAnchor(target))}" />`;
+    const from = outputAnchor(source);
+    const to = inputAnchor(target);
+    const path = bezierPath(from, to);
+    const selected = connection.id === state.selectedConnectionId ? " selected" : "";
+    const midX = (from.x + to.x) / 2;
+    const midY = (from.y + to.y) / 2;
+    return `
+      <g class="connection-item${selected}" data-edge-id="${connection.id}">
+        <path class="connection-hit" d="${path}" data-action="select-connection" data-edge-id="${connection.id}" />
+        <path class="connection-path" d="${path}" />
+        <g class="connection-remove" data-action="delete-connection" data-edge-id="${connection.id}" transform="translate(${midX} ${midY})" aria-label="删除连线">
+          <circle r="12" />
+          <text text-anchor="middle" dominant-baseline="central">×</text>
+        </g>
+      </g>
+    `;
   }).join("");
   const previewPath = previewSource
     ? `<path class="connection-path connection-preview-path" d="${bezierPath(outputAnchor(previewSource), previewTarget)}" />`
@@ -863,10 +901,23 @@ function statusText(status) {
 
 function renderInspector() {
   const node = getSelectedNode();
-  els.inspectorEmpty.style.display = node ? "none" : "block";
-  els.nodeSummary.style.display = node ? "grid" : "none";
+  const connection = getSelectedConnection();
+  els.inspectorEmpty.style.display = node || connection ? "none" : "block";
+  els.nodeSummary.style.display = node || connection ? "grid" : "none";
   els.paramEditor.style.display = node ? "grid" : "none";
-  els.selectedNodeLabel.textContent = node ? node.title : "未选择节点";
+  els.selectedNodeLabel.textContent = node ? node.title : connection ? "已选择连线" : "未选择节点";
+  if (!node && connection) {
+    const canvas = getActiveCanvas();
+    const source = canvas.nodes.find((item) => item.id === connection.from);
+    const target = canvas.nodes.find((item) => item.id === connection.to);
+    els.nodeSummary.innerHTML = `
+      <div class="summary-row"><span>来源</span><strong>${escapeHtml(source?.title || connection.from)}</strong></div>
+      <div class="summary-row"><span>目标</span><strong>${escapeHtml(target?.title || connection.to)}</strong></div>
+      <div class="summary-row"><span>映射</span><strong>${escapeHtml(connection.mapping || "未指定")}</strong></div>
+    `;
+    els.paramEditor.innerHTML = "";
+    return;
+  }
   if (!node) {
     els.nodeSummary.innerHTML = "";
     els.paramEditor.innerHTML = "";
@@ -1144,7 +1195,7 @@ function openInputSheet(nodeId, field) {
   const node = canvas.nodes.find((item) => item.id === nodeId);
   const meta = INPUT_META[field];
   if (!node || !meta) return;
-  state.selectedNodeId = node.id;
+  selectNode(node.id);
   state.activeInput = { nodeId, field };
   els.inputSheetEyebrow.textContent = meta.eyebrow;
   els.inputSheetTitle.textContent = meta.title;
@@ -1393,6 +1444,23 @@ function validateNode(node, request) {
 
 function renderRequestPreview() {
   const node = getSelectedNode();
+  const connection = getSelectedConnection();
+  if (!node && connection) {
+    const canvas = getActiveCanvas();
+    const source = canvas.nodes.find((item) => item.id === connection.from);
+    const target = canvas.nodes.find((item) => item.id === connection.to);
+    els.requestPreview.textContent = JSON.stringify({
+      connectionId: connection.id,
+      from: source?.title || connection.from,
+      to: target?.title || connection.to,
+      mapping: connection.mapping || ""
+    }, null, 2);
+    els.validationBox.innerHTML = `<div class="validation-item">已选择连线。点击线上 x、顶部删除，或按 Delete / Backspace 可删除。</div>`;
+    els.copyRequestBtn.disabled = false;
+    els.createTaskBtn.disabled = true;
+    els.pollTaskBtn.disabled = true;
+    return;
+  }
   if (!node) {
     els.requestPreview.textContent = "";
     els.validationBox.innerHTML = "";
@@ -2037,14 +2105,14 @@ async function createTask(nodeId = state.selectedNodeId) {
     const taskId = extractTaskId(result);
     if (taskId) node.lastTaskId = taskId;
     const resultNode = createOrUpdateResultNode(node, result);
-    state.selectedNodeId = resultNode.id;
+    selectNode(resultNode.id);
     pushResponse("seedance.create", result);
     render();
     if (resultNode.taskId) pollResultNode(resultNode.id, { auto: true });
     saveWorkspace();
   } catch (error) {
     const resultNode = createFailureResultNode(node, error);
-    state.selectedNodeId = resultNode.id;
+    selectNode(resultNode.id);
     pushResponse("seedance.create.error", error.payload || { error: error.message });
     render();
     saveWorkspace();
@@ -2060,14 +2128,14 @@ async function createImage2Task(nodeId = state.selectedNodeId) {
   try {
     const result = await createImage2Direct(requestBody);
     const resultNode = createImageResultNode(node, result);
-    state.selectedNodeId = resultNode.id;
+    selectNode(resultNode.id);
     pushResponse("image2.generate", result);
     render();
     saveWorkspace();
   } catch (error) {
     const resultNode = createFailureResultNode(node, error);
     resultNode.title = "Image create failed";
-    state.selectedNodeId = resultNode.id;
+    selectNode(resultNode.id);
     pushResponse("image2.generate.error", error.payload || { error: error.message });
     render();
     saveWorkspace();
@@ -2085,7 +2153,7 @@ async function pollTask(nodeId = state.selectedNodeId) {
   const resultNode = getResultNodeForTask(node.id, node.lastTaskId) || createOrUpdateResultNode(node, {
     task: { id: node.lastTaskId, status: "pending" }
   });
-  state.selectedNodeId = resultNode.id;
+  selectNode(resultNode.id);
   render();
   await pollResultNode(resultNode.id);
 }
@@ -2139,7 +2207,7 @@ function addCanvas() {
   const canvas = defaultCanvas(state.canvases.length + 1);
   state.canvases.push(canvas);
   state.activeCanvasId = canvas.id;
-  state.selectedNodeId = canvas.nodes[0]?.id || "";
+  selectNode(canvas.nodes[0]?.id || "");
   render();
 }
 
@@ -2150,7 +2218,7 @@ function addSeedanceNode(position = null) {
   const node = defaultNode(point.x + (position ? 0 : offset), point.y + (position ? 0 : offset));
   node.title = `Seedance 节点 ${canvas.nodes.length + 1}`;
   canvas.nodes.push(node);
-  state.selectedNodeId = node.id;
+  selectNode(node.id);
   state.ui.nodeMenuOpen = false;
   closeCanvasContextMenu();
   render();
@@ -2163,7 +2231,7 @@ function addImage2Node(position = null) {
   const node = defaultImage2Node(point.x + (position ? 0 : offset), point.y + (position ? 0 : offset));
   node.title = `Image2 节点 ${canvas.nodes.length + 1}`;
   canvas.nodes.push(node);
-  state.selectedNodeId = node.id;
+  selectNode(node.id);
   state.ui.nodeMenuOpen = false;
   closeCanvasContextMenu();
   render();
@@ -2205,7 +2273,7 @@ function duplicateNode() {
   copy.y += 36;
   copy.lastTaskId = "";
   canvas.nodes.push(copy);
-  state.selectedNodeId = copy.id;
+  selectNode(copy.id);
   render();
 }
 
@@ -2232,7 +2300,8 @@ function connectNodes(fromId, toId) {
   state.ui.connectingFrom = "";
   state.ui.connectionPreview = null;
   state.ui.connectionTargetId = "";
-  state.selectedNodeId = toId;
+  state.selectedConnectionId = "";
+  selectNode(toId);
   render();
 }
 
@@ -2242,7 +2311,7 @@ function startConnection(nodeId, event = null) {
   state.ui.connectingFrom = nodeId;
   state.ui.connectionPreview = event ? clientToCanvas(event.clientX, event.clientY) : outputAnchor(node);
   state.ui.connectionTargetId = "";
-  state.selectedNodeId = nodeId;
+  selectNode(nodeId);
   closeCanvasContextMenu();
   renderCanvas();
   renderInspector();
@@ -2317,9 +2386,43 @@ function deleteNode(nodeId = state.selectedNodeId) {
   const canvas = getActiveCanvas();
   canvas.nodes = canvas.nodes.filter((item) => item.id !== nodeId);
   canvas.connections = (canvas.connections || []).filter((connection) => connection.from !== nodeId && connection.to !== nodeId);
+  if (!canvas.connections.some((connection) => connection.id === state.selectedConnectionId)) state.selectedConnectionId = "";
   activePolls.delete(nodeId);
-  if (state.selectedNodeId === nodeId) state.selectedNodeId = canvas.nodes[0]?.id || "";
+  if (state.selectedNodeId === nodeId) selectNode(canvas.nodes[0]?.id || "");
   render();
+}
+
+function selectConnection(connectionId) {
+  const canvas = getActiveCanvas();
+  const connection = (canvas.connections || []).find((item) => item.id === connectionId);
+  if (!connection) return;
+  state.selectedConnectionId = connection.id;
+  state.selectedNodeId = "";
+  cancelConnection();
+  renderCanvas();
+  renderInspector();
+  renderRequestPreview();
+}
+
+function deleteConnection(connectionId = state.selectedConnectionId) {
+  if (!connectionId) return;
+  const canvas = getActiveCanvas();
+  const before = canvas.connections.length;
+  canvas.connections = (canvas.connections || []).filter((connection) => connection.id !== connectionId);
+  if (state.selectedConnectionId === connectionId) state.selectedConnectionId = "";
+  if (before !== canvas.connections.length) {
+    pushResponse("connection.deleted", { connectionId });
+    render();
+    saveWorkspace();
+  }
+}
+
+function deleteSelection() {
+  if (state.selectedConnectionId) {
+    deleteConnection();
+    return;
+  }
+  deleteNode();
 }
 
 function setZoom(nextZoom, centerClientX, centerClientY) {
@@ -2382,7 +2485,7 @@ function bindStaticEvents() {
     openCanvasContextMenu(rect.left + rect.width / 2, rect.top + rect.height / 2);
   });
   els.duplicateNodeBtn.addEventListener("click", duplicateNode);
-  els.deleteNodeBtn.addEventListener("click", () => deleteNode());
+  els.deleteNodeBtn.addEventListener("click", deleteSelection);
   els.zoomInBtn.addEventListener("click", () => setZoom(getActiveCanvas().view.zoom * 1.15));
   els.zoomOutBtn.addEventListener("click", () => setZoom(getActiveCanvas().view.zoom / 1.15));
   els.resetViewBtn.addEventListener("click", resetView);
@@ -2413,6 +2516,13 @@ function bindStaticEvents() {
     if (event.target === els.inputOverlay) closeInputSheet();
   });
   document.addEventListener("keydown", (event) => {
+    if ((event.key === "Delete" || event.key === "Backspace") && !isEditingTarget(event.target)) {
+      if (state.selectedConnectionId || state.selectedNodeId) {
+        event.preventDefault();
+        deleteSelection();
+      }
+      return;
+    }
     if (event.key === "Escape") {
       cancelConnection();
       closeCanvasContextMenu();
@@ -2433,7 +2543,7 @@ function bindStaticEvents() {
     if (!button) return;
     state.activeCanvasId = button.dataset.canvasId;
     const canvas = getActiveCanvas();
-    state.selectedNodeId = canvas.nodes[0]?.id || "";
+    selectNode(canvas.nodes[0]?.id || "");
     render();
   });
 
@@ -2455,6 +2565,18 @@ function bindCanvasEvents() {
   });
 
   els.canvasBoard.addEventListener("click", (event) => {
+    const deleteEdgeTarget = event.target.closest?.("[data-action='delete-connection']");
+    if (deleteEdgeTarget) {
+      event.stopPropagation();
+      deleteConnection(deleteEdgeTarget.dataset.edgeId);
+      return;
+    }
+    const selectEdgeTarget = event.target.closest?.("[data-action='select-connection']");
+    if (selectEdgeTarget) {
+      event.stopPropagation();
+      selectConnection(selectEdgeTarget.dataset.edgeId);
+      return;
+    }
     const nodeEl = event.target.closest(".node");
     if (!nodeEl) return;
     const nodeId = nodeEl.dataset.nodeId;
@@ -2494,11 +2616,11 @@ function bindCanvasEvents() {
       return;
     }
     if (event.target.closest("[data-focus-params]")) {
-      state.selectedNodeId = nodeId;
+      selectNode(nodeId);
       render();
       return;
     }
-    state.selectedNodeId = nodeId;
+    selectNode(nodeId);
     renderCanvas();
     renderInspector();
     renderRequestPreview();
@@ -2522,7 +2644,7 @@ function bindCanvasEvents() {
     if (!nodeEl) return;
     const node = getActiveCanvas().nodes.find((item) => item.id === nodeEl.dataset.nodeId);
     if (!node) return;
-    state.selectedNodeId = node.id;
+    selectNode(node.id);
     nodeDrag = {
       nodeId: node.id,
       startX: event.clientX,
@@ -2562,6 +2684,7 @@ function bindCanvasEvents() {
 
   els.canvasViewport.addEventListener("pointerdown", (event) => {
     if (event.target.closest(".canvas-context-menu")) return;
+    if (event.target.closest(".connection-item")) return;
     if (event.target.closest(".node")) return;
     closeCanvasContextMenu();
     if (state.ui.connectingFrom) {
