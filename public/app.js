@@ -163,6 +163,7 @@ const state = {
 };
 
 const activePolls = new Set();
+const activeImage2Generations = new Set();
 let sameOriginApiBaseUrl = "";
 
 const $ = (selector) => document.querySelector(selector);
@@ -562,6 +563,7 @@ function ensureWorkspace() {
       if (node.type === "image2-input") {
         node.params = { ...DEFAULT_IMAGE2_PARAMS, ...(node.params || {}) };
         node.image2ReferenceImageUrls = node.image2ReferenceImageUrls || node.referenceImageUrls || node.referenceImageUrl || "";
+        if (node.generating && !activeImage2Generations.has(node.id)) node.generating = false;
         node.inputBindings = node.inputBindings || {};
       }
     }
@@ -829,6 +831,7 @@ function renderImage2CanvasNode(node) {
   const promptText = node.prompt || "Prompt is empty";
   const referenceCount = getResolvedFieldUrls(node, "image2ReferenceImageUrls").length;
   const maskCount = getResolvedFieldUrls(node, "maskUrl").length;
+  const generating = Boolean(node.generating || activeImage2Generations.has(node.id));
   return `
     <article class="node image2-node${selected}${connectionClass(node)}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
       <div class="node-head" data-drag-handle="true">
@@ -854,7 +857,7 @@ function renderImage2CanvasNode(node) {
           </button>
         </div>
         <div class="node-actions">
-          <button type="button" data-action="create-task">生成图片</button>
+          <button type="button" data-action="create-task" ${generating ? "disabled" : ""}>${generating ? "生成中" : "生成图片"}</button>
         </div>
       </div>
     </article>
@@ -909,6 +912,21 @@ function renderImageResultCanvasNode(node) {
   const selected = node.id === state.selectedNodeId ? " selected" : "";
   const status = node.status || "succeeded";
   const imageUrl = node.imageUrl || "";
+  const errorMessage = node.errorMessage || node.errorDetails?.message || "";
+  const suggestions = node.errorDetails?.suggestions || [];
+  const preview = (() => {
+    if (status === "failed" && errorMessage) {
+      return `
+        <div class="result-empty result-error">
+          <strong>${escapeHtml(node.errorDetails?.code || "生成失败")}</strong>
+          <span>${escapeHtml(errorMessage)}</span>
+          ${suggestions.length ? `<ul class="suggestion-list">${suggestions.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+        </div>
+      `;
+    }
+    if (imageUrl) return `<img class="image-preview" src="${escapeHtml(imageUrl)}" alt="generated image" />`;
+    return `<div class="result-empty"><strong>${escapeHtml(statusText(status))}</strong><span>${status === "running" ? "正在生成图片，请稍等。" : "等待图片地址"}</span></div>`;
+  })();
   return `
     <article class="node result-node image-result-node${selected}${connectionClass(node)}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
       <div class="node-head" data-drag-handle="true">
@@ -921,7 +939,7 @@ function renderImageResultCanvasNode(node) {
       </div>
       ${renderNodeConnector(node)}
       <div class="node-body">
-        ${imageUrl ? `<img class="image-preview" src="${escapeHtml(imageUrl)}" alt="generated image" />` : `<div class="result-empty"><strong>${escapeHtml(statusText(status))}</strong><span>Waiting for image URL</span></div>`}
+        ${preview}
         <div class="node-actions">
           ${imageUrl ? `<a class="open-link" href="${escapeHtml(imageUrl)}" target="_blank" rel="noreferrer">打开图片</a>` : ""}
         </div>
@@ -985,12 +1003,23 @@ function renderInspector() {
     return;
   }
 
-  if (node.type === "video-result" || node.type === "image-result") {
+  if (node.type === "image-result") {
+    els.paramEditor.style.display = "none";
+    els.nodeSummary.innerHTML = `
+      <div class="summary-row"><span>Status</span><strong>${escapeHtml(statusText(node.status))}</strong></div>
+      <div class="summary-row"><span>Result ID</span><strong>${escapeHtml(node.taskId || "-")}</strong></div>
+      <div class="summary-row"><span>Output</span><strong>${node.imageUrl ? "Ready" : "Waiting"}</strong></div>
+      ${node.errorMessage ? `<div class="summary-row"><span>Error</span><strong>${escapeHtml(node.errorDetails?.code || "Failed")}</strong></div>` : ""}
+    `;
+    return;
+  }
+
+  if (node.type === "video-result") {
     els.paramEditor.style.display = "none";
     els.nodeSummary.innerHTML = `
       <div class="summary-row"><span>Status</span><strong>${escapeHtml(statusText(node.status))}</strong></div>
       <div class="summary-row"><span>Task ID</span><strong>${escapeHtml(node.taskId || "-")}</strong></div>
-      <div class="summary-row"><span>Output</span><strong>${node.videoUrl || node.imageUrl ? "Ready" : "Waiting"}</strong></div>
+      <div class="summary-row"><span>Output</span><strong>${node.videoUrl ? "Ready" : "Waiting"}</strong></div>
       <div class="summary-row"><span>Last frame</span><strong>${node.lastFrameImage ? "Ready" : "None"}</strong></div>
       ${node.errorMessage ? `<div class="summary-row"><span>Error</span><strong>${escapeHtml(node.errorDetails?.code || "Failed")}</strong></div>` : ""}
     `;
@@ -1569,14 +1598,16 @@ function renderRequestPreview() {
   if (node.type === "image2-input") {
     const request = buildImage2Request(node);
     const validation = validateImage2Node(node, request);
+    const generating = Boolean(node.generating || activeImage2Generations.has(node.id));
     els.requestPreview.textContent = JSON.stringify(request, null, 2);
     els.validationBox.innerHTML = [
       ...validation.errors.map((text) => `<div class="validation-item error">${escapeHtml(text)}</div>`),
       ...validation.warnings.map((text) => `<div class="validation-item warn">${escapeHtml(text)}</div>`),
-      validation.errors.length || validation.warnings.length ? "" : `<div class="validation-item">图片请求校验通过。参考图最多 ${IMAGE2_API_LIMITS.referenceImages} 张，Mask 最多 ${IMAGE2_API_LIMITS.masks} 张。</div>`
+      generating ? `<div class="validation-item warn">图片正在生成中，结果会在画布上的 Image result 节点中更新。</div>` : "",
+      validation.errors.length || validation.warnings.length || generating ? "" : `<div class="validation-item">图片请求校验通过。参考图最多 ${IMAGE2_API_LIMITS.referenceImages} 张，Mask 最多 ${IMAGE2_API_LIMITS.masks} 张。</div>`
     ].join("");
     els.copyRequestBtn.disabled = false;
-    els.createTaskBtn.disabled = Boolean(validation.errors.length);
+    els.createTaskBtn.disabled = Boolean(validation.errors.length || generating);
     els.pollTaskBtn.disabled = true;
     return;
   }
@@ -2206,6 +2237,55 @@ function createImageResultNode(sourceNode, payload) {
   return resultNode;
 }
 
+function createPendingImageResultNode(sourceNode, requestBody) {
+  const canvas = getActiveCanvas();
+  const pendingCount = canvas.nodes.filter((node) =>
+    node.type === "image-result" &&
+    node.sourceNodeId === sourceNode.id &&
+    (node.status === "running" || node.status === "pending")
+  ).length;
+  const resultNode = {
+    id: uid("image-result"),
+    type: "image-result",
+    title: "Image result",
+    sourceNodeId: sourceNode.id,
+    taskId: `local-${uid("image-job").slice(-10)}`,
+    status: "running",
+    x: sourceNode.x + 520,
+    y: sourceNode.y + pendingCount * 260,
+    imageUrl: "",
+    usage: null,
+    errorMessage: "",
+    errorDetails: null,
+    raw: { request: sanitizeForDisplay(requestBody) }
+  };
+  canvas.nodes.push(resultNode);
+  canvas.connections.push({ id: uid("edge"), from: sourceNode.id, to: resultNode.id, mapping: "" });
+  return resultNode;
+}
+
+function applyImageResult(resultNode, payload) {
+  const result = payload?.result || payload || {};
+  resultNode.title = "Image result";
+  resultNode.taskId = result.id || resultNode.taskId || "";
+  resultNode.status = result.status || "succeeded";
+  resultNode.imageUrl = result.content?.image_url || result.imageUrl || resultNode.imageUrl || "";
+  resultNode.usage = result.usage || null;
+  resultNode.errorMessage = "";
+  resultNode.errorDetails = null;
+  resultNode.raw = result;
+}
+
+function applyImageFailure(resultNode, error) {
+  const info = normalizeApiError(error);
+  resultNode.title = "Image create failed";
+  resultNode.status = "failed";
+  resultNode.imageUrl = "";
+  resultNode.errorMessage = info.message;
+  resultNode.errorDetails = info;
+  resultNode.raw = info.raw;
+}
+
 function clientToCanvas(clientX, clientY) {
   const canvas = getActiveCanvas();
   const rect = els.canvasViewport.getBoundingClientRect();
@@ -2307,22 +2387,57 @@ async function createTask(nodeId = state.selectedNodeId) {
 async function createImage2Task(nodeId = state.selectedNodeId) {
   const node = getNodeById(nodeId);
   if (!node || node.type !== "image2-input") return;
+  if (activeImage2Generations.has(node.id)) {
+    pushResponse("image2.generate.running", { nodeId: node.id, message: "该 Image2 节点已有生成任务在进行中。" });
+    return;
+  }
   const requestBody = buildImage2Request(node);
   const validation = validateImage2Node(node, requestBody);
-  if (validation.errors.length) return;
+  if (validation.errors.length) {
+    selectNode(node.id);
+    pushResponse("image2.validation.error", { errors: validation.errors, warnings: validation.warnings });
+    renderInspector();
+    renderRequestPreview();
+    return;
+  }
+  const resultNode = createPendingImageResultNode(node, requestBody);
+  node.generating = true;
+  activeImage2Generations.add(node.id);
+  selectNode(resultNode.id);
+  pushResponse("image2.generate.started", {
+    nodeId: node.id,
+    resultNodeId: resultNode.id,
+    references: getResolvedFieldUrls(node, "image2ReferenceImageUrls").length,
+    hasMask: Boolean(getResolvedFieldUrl(node, "maskUrl"))
+  });
+  render();
+  saveWorkspace();
   try {
     const result = await createImage2Direct(requestBody);
-    const resultNode = createImageResultNode(node, result);
-    selectNode(resultNode.id);
+    const record = findNodeRecord(resultNode.id);
+    if (record?.node?.type === "image-result") {
+      applyImageResult(record.node, result);
+      selectNode(record.node.id);
+    }
     pushResponse("image2.generate", result);
     render();
     saveWorkspace();
   } catch (error) {
-    const resultNode = createFailureResultNode(node, error);
-    resultNode.title = "Image create failed";
-    selectNode(resultNode.id);
+    const record = findNodeRecord(resultNode.id);
+    if (record?.node?.type === "image-result") {
+      applyImageFailure(record.node, error);
+      selectNode(record.node.id);
+    }
     pushResponse("image2.generate.error", error.payload || { error: error.message });
     render();
+    saveWorkspace();
+  } finally {
+    const sourceRecord = findNodeRecord(node.id);
+    if (sourceRecord?.node?.type === "image2-input") sourceRecord.node.generating = false;
+    activeImage2Generations.delete(node.id);
+    renderCanvas();
+    renderInspector();
+    renderRequestPreview();
     saveWorkspace();
   }
 }
@@ -2573,6 +2688,7 @@ function deleteNode(nodeId = state.selectedNodeId) {
   canvas.connections = (canvas.connections || []).filter((connection) => connection.from !== nodeId && connection.to !== nodeId);
   if (!canvas.connections.some((connection) => connection.id === state.selectedConnectionId)) state.selectedConnectionId = "";
   activePolls.delete(nodeId);
+  activeImage2Generations.delete(nodeId);
   if (state.selectedNodeId === nodeId) selectNode(canvas.nodes[0]?.id || "");
   render();
 }
