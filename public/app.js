@@ -122,6 +122,10 @@ const INPUT_META = {
 const state = {
   config: { ...DEFAULT_CONFIG },
   image2Config: { ...DEFAULT_IMAGE2_CONFIG },
+  apiProxy: {
+    enabled: false,
+    baseUrl: ""
+  },
   canvases: [],
   activeCanvasId: "",
   selectedNodeId: "",
@@ -155,6 +159,8 @@ const els = {
   apiOverlay: $("#apiOverlay"),
   closeApiManagerBtn: $("#closeApiManagerBtn"),
   saveApiConfigBtn: $("#saveApiConfigBtn"),
+  apiProxyEnabled: $("#apiProxyEnabled"),
+  apiProxyBaseUrl: $("#apiProxyBaseUrl"),
   testSeedanceApiBtn: $("#testSeedanceApiBtn"),
   seedanceApiTestResult: $("#seedanceApiTestResult"),
   testImage2ApiBtn: $("#testImage2ApiBtn"),
@@ -326,6 +332,8 @@ function syncApiManagerInputs() {
   els.apiSeedanceModelName.value = state.config.model || "";
   els.apiSeedanceWpTitle.value = state.config.wpTitle || "";
   els.apiSeedanceExtraHeaders.value = state.config.extraHeaders || "";
+  els.apiProxyEnabled.checked = Boolean(state.apiProxy?.enabled);
+  els.apiProxyBaseUrl.value = state.apiProxy?.baseUrl || "";
   els.image2ApiKey.value = state.image2Config.apiKey || "";
   els.image2Endpoint.value = state.image2Config.endpoint || "";
   els.image2ModelName.value = state.image2Config.model || "";
@@ -345,6 +353,11 @@ function updateApiConfigsFromManager() {
   state.image2Config.model = els.image2ModelName.value.trim() || "gpt-image-2";
   state.image2Config.wpTitle = els.image2WpTitle.value.trim() || "demo-app";
   state.image2Config.extraHeaders = els.image2ExtraHeaders.value.trim();
+  state.apiProxy = {
+    ...(state.apiProxy || {}),
+    enabled: Boolean(els.apiProxyEnabled.checked),
+    baseUrl: els.apiProxyBaseUrl.value.trim()
+  };
 }
 
 function serializeWorkspace(options = {}) {
@@ -454,6 +467,7 @@ function applyWorkspaceSnapshot(saved) {
   if (!saved) return false;
   state.config = { ...DEFAULT_CONFIG, ...(saved.config || {}) };
   state.image2Config = { ...DEFAULT_IMAGE2_CONFIG, ...(saved.image2Config || {}) };
+  state.apiProxy = { enabled: false, baseUrl: "", ...(saved.apiProxy || {}) };
   state.canvases = Array.isArray(saved.canvases) ? saved.canvases : [];
   state.activeCanvasId = saved.activeCanvasId || "";
   state.selectedNodeId = saved.selectedNodeId || "";
@@ -1797,17 +1811,64 @@ async function testEndpointConnection(config = {}, endpoint) {
       bodyPreview: JSON.stringify(data).slice(0, 500)
     };
   } catch (error) {
+    const message = error instanceof TypeError
+      ? "浏览器无法访问该 API，通常是上游未允许 GitHub Pages 跨域请求。请开启 API 代理模式。"
+      : `连接失败：${error instanceof Error ? error.message : String(error)}`;
     return {
       ok: false,
       reachable: false,
-      message: `连接失败：${error instanceof Error ? error.message : String(error)}`
+      corsBlocked: error instanceof TypeError,
+      message
     };
   }
+}
+
+function proxyBaseUrl() {
+  return String(state.apiProxy?.baseUrl || "").replace(/\/+$/, "");
+}
+
+function shouldUseProxy() {
+  return Boolean(state.apiProxy?.enabled && proxyBaseUrl());
+}
+
+function proxyEndpoint(path) {
+  return `${proxyBaseUrl()}${path}`;
+}
+
+async function postProxyJson(path, payload) {
+  const response = await fetch(proxyEndpoint(path), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await readResponseJson(response);
+  if (!response.ok || data.error) {
+    const error = new Error(data.error || `Proxy request failed: ${response.status}`);
+    error.payload = data;
+    throw error;
+  }
+  return data;
+}
+
+function proxyConfigStatus() {
+  if (!state.apiProxy?.enabled) return null;
+  if (!proxyBaseUrl()) return {
+    ok: false,
+    mode: "proxy",
+    message: "已开启代理模式，但代理地址为空。"
+  };
+  return null;
 }
 
 async function createSeedanceTaskDirect(requestBody) {
   const config = buildRuntimeConfig();
   const normalizedRequestBody = normalizeSeedanceRequest(requestBody);
+  if (shouldUseProxy()) {
+    return postProxyJson("/api/seedance/tasks", {
+      config,
+      requestBody: normalizedRequestBody
+    });
+  }
   if (config.mode === "mock") {
     return {
       task: {
@@ -1830,6 +1891,12 @@ async function createSeedanceTaskDirect(requestBody) {
 
 async function pollSeedanceTaskDirect(taskId) {
   const config = buildRuntimeConfig();
+  if (shouldUseProxy()) {
+    return postProxyJson("/api/seedance/poll", {
+      config,
+      taskId
+    });
+  }
   if (config.mode === "mock") {
     return {
       task: {
@@ -1860,6 +1927,12 @@ async function pollSeedanceTaskDirect(taskId) {
 async function createImage2Direct(requestBody) {
   const config = buildImage2RuntimeConfig();
   const normalizedRequestBody = normalizeImage2Request(requestBody);
+  if (shouldUseProxy()) {
+    return postProxyJson("/api/image2/generate", {
+      config,
+      requestBody: normalizedRequestBody
+    });
+  }
   if (config.mode === "mock") return createMockImage2Result(normalizedRequestBody);
   const response = await fetch(config.endpoint, {
     method: "POST",
@@ -2047,10 +2120,11 @@ async function testSeedanceApiConnection() {
   els.testSeedanceApiBtn.textContent = "测试中";
   els.seedanceApiTestResult.className = "hint-text";
   try {
-    const result = await testEndpointConnection(
-      { ...state.config, mode: state.config.apiKey ? "api" : "mock" },
-      state.config.createEndpoint
-    );
+    const config = { ...state.config, mode: state.config.apiKey ? "api" : "mock" };
+    const proxyStatus = proxyConfigStatus();
+    const result = proxyStatus || (shouldUseProxy()
+      ? await postProxyJson("/api/seedance/test", { config })
+      : await testEndpointConnection(config, state.config.createEndpoint));
     els.seedanceApiTestResult.textContent = result.message || "连通性测试完成。";
     els.seedanceApiTestResult.className = result.ok ? "hint-text api-result ok" : "hint-text api-result error";
     pushResponse("seedance.test", result);
@@ -2071,10 +2145,11 @@ async function testImage2ApiConnection() {
   els.testImage2ApiBtn.textContent = "测试中";
   els.image2ApiTestResult.className = "hint-text";
   try {
-    const result = await testEndpointConnection(
-      { ...state.image2Config, mode: state.image2Config.apiKey ? "api" : "mock" },
-      state.image2Config.endpoint
-    );
+    const config = { ...state.image2Config, mode: state.image2Config.apiKey ? "api" : "mock" };
+    const proxyStatus = proxyConfigStatus();
+    const result = proxyStatus || (shouldUseProxy()
+      ? await postProxyJson("/api/image2/test", { config })
+      : await testEndpointConnection(config, state.image2Config.endpoint));
     els.image2ApiTestResult.textContent = result.message || "连通性测试完成。";
     els.image2ApiTestResult.className = result.ok ? "hint-text api-result ok" : "hint-text api-result error";
     pushResponse("image2.test", result);

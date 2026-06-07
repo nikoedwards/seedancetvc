@@ -1091,6 +1091,10 @@ h3 {
   padding: 14px;
 }
 
+.api-proxy-card {
+  grid-column: 1 / -1;
+}
+
 .api-card h3 {
   font-size: 16px;
 }

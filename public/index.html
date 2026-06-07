@@ -149,6 +149,22 @@
           <button id="closeApiManagerBtn" class="ghost-btn" type="button">关闭</button>
         </div>
         <div class="sheet-body api-grid">
+          <section class="api-card api-proxy-card">
+            <div>
+              <h3>调用方式</h3>
+              <p class="hint-text">GitHub Pages 直连 API 需要上游允许浏览器跨域；如果连通性测试提示 CORS，请使用代理模式。</p>
+            </div>
+            <label class="switch-row">
+              <span>使用 API 代理</span>
+              <input id="apiProxyEnabled" type="checkbox" />
+            </label>
+            <label>
+              <span>代理地址</span>
+              <input id="apiProxyBaseUrl" placeholder="https://your-proxy.example" />
+            </label>
+            <p class="hint-text">代理服务需要暴露本项目的 API 路由，用来从服务端转发请求。</p>
+          </section>
+
           <section class="api-card">
             <div>
               <h3>Seedance</h3>

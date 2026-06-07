@@ -47,3 +47,5 @@ One-time setup in GitHub:
 4. Push to `main`, then wait for the Pages deployment workflow to finish.
 
 The static app stores project data in the browser. Use export/import for important project backups, especially before clearing browser data or changing devices.
+
+If a provider blocks browser cross-origin requests, deploy the local Node service as an API proxy and configure its public base URL in the API Manager.
