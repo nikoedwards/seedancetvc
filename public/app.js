@@ -323,10 +323,34 @@ function findNodeRecord(nodeId) {
 }
 
 function splitLines(value) {
-  return String(value || "")
-    .split(/\n|,/)
+  const lines = String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
     .map((item) => item.trim())
     .filter(Boolean);
+  const entries = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^data:[^,]+$/i.test(line) && lines[index + 1] && !looksLikeAssetStart(lines[index + 1])) {
+      entries.push(`${line},${lines[index + 1]}`);
+      index += 1;
+      continue;
+    }
+    entries.push(...splitAssetLine(line));
+  }
+  return entries;
+}
+
+function splitAssetLine(line) {
+  if (/^data:/i.test(line)) return [line];
+  return line
+    .split(/\s*,\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function looksLikeAssetStart(value) {
+  return /^(data:|https?:|file-|\/outputs\/|\/uploads\/|mock:\/\/)/i.test(String(value || "").trim());
 }
 
 function joinLines(urls) {
