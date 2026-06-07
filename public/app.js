@@ -206,6 +206,11 @@ const els = {
   apiSeedanceModelName: $("#apiSeedanceModelName"),
   apiSeedanceWpTitle: $("#apiSeedanceWpTitle"),
   apiSeedanceExtraHeaders: $("#apiSeedanceExtraHeaders"),
+  videoPlayerOverlay: $("#videoPlayerOverlay"),
+  videoPlayer: $("#videoPlayer"),
+  videoPlayerTitle: $("#videoPlayerTitle"),
+  videoPlayerOpenLink: $("#videoPlayerOpenLink"),
+  closeVideoPlayerBtn: $("#closeVideoPlayerBtn"),
   newCanvasBtn: $("#newCanvasBtn"),
   addNodeMenuBtn: $("#addNodeMenuBtn"),
   nodeAddMenu: $("#nodeAddMenu"),
@@ -903,12 +908,6 @@ function renderResultCanvasNode(node) {
   const playable = videoUrl && !videoUrl.startsWith("mock://");
   const errorMessage = node.errorMessage || node.errorDetails?.message || "";
   const suggestions = node.errorDetails?.suggestions || [];
-  let preview = playable
-    ? `<video class="video-preview" src="${escapeHtml(videoUrl)}" controls preload="metadata"></video>`
-    : `<div class="result-empty"><strong>${escapeHtml(statusText(status))}</strong><span>${escapeHtml(videoUrl || "等待任务返回视频地址")}</span></div>`;
-  if (!playable && errorMessage) {
-    preview = `<div class="result-empty error-result"><strong>创建失败</strong><span>${escapeHtml(errorMessage)}</span></div>`;
-  }
   const errorBlock = errorMessage
     ? `<div class="result-error"><strong>${escapeHtml(node.errorDetails?.code || "Error")}</strong><span>${escapeHtml(errorMessage)}</span></div>`
     : "";
@@ -993,7 +992,14 @@ function renderResultPreview(node, status, videoUrl, playable) {
     `;
   }
   if (playable) {
-    return `<video class="video-preview" src="${escapeHtml(videoUrl)}" controls preload="metadata"></video>`;
+    return `
+      <div class="media-preview-shell" data-media-safe="true">
+        <video class="video-preview" src="${escapeHtml(videoUrl)}" controls controlsList="nofullscreen noremoteplayback" disablepictureinpicture playsinline preload="metadata"></video>
+        <div class="media-actions">
+          <button class="secondary-btn" type="button" data-action="open-video-player" data-video-url="${escapeHtml(videoUrl)}" data-video-title="${escapeHtml(node.title || "视频预览")}">全屏播放</button>
+        </div>
+      </div>
+    `;
   }
   return `<div class="result-empty"><strong>${escapeHtml(statusText(status))}</strong><span>${escapeHtml(videoUrl || "Waiting for video URL")}</span></div>`;
 }
@@ -3096,6 +3102,49 @@ function closeApiManager() {
   els.apiOverlay.hidden = true;
 }
 
+async function openVideoPlayer(url, title = "视频预览") {
+  if (!url) return;
+  els.videoPlayerTitle.textContent = title || "视频预览";
+  els.videoPlayer.src = url;
+  els.videoPlayerOpenLink.href = url;
+  els.videoPlayerOverlay.classList.remove("windowed");
+  els.videoPlayerOverlay.hidden = false;
+  try {
+    await els.videoPlayer.play();
+  } catch {
+    // Some browsers require the user to press play after opening the overlay.
+  }
+  try {
+    if (document.fullscreenElement !== els.videoPlayerOverlay && els.videoPlayerOverlay.requestFullscreen) {
+      await els.videoPlayerOverlay.requestFullscreen();
+    }
+  } catch {
+    // The overlay remains useful even when fullscreen permission is denied.
+  }
+}
+
+async function closeVideoPlayer() {
+  els.videoPlayer.pause();
+  els.videoPlayer.removeAttribute("src");
+  els.videoPlayer.load();
+  els.videoPlayerOverlay.classList.remove("windowed");
+  els.videoPlayerOverlay.hidden = true;
+  if (document.fullscreenElement === els.videoPlayerOverlay) {
+    try {
+      await document.exitFullscreen();
+    } catch {
+      // Ignore fullscreen teardown failures.
+    }
+  }
+}
+
+function openVideoPlayerFromAction(target) {
+  const button = target.closest?.("[data-action='open-video-player']");
+  if (!button) return false;
+  openVideoPlayer(button.dataset.videoUrl || "", button.dataset.videoTitle || "视频预览");
+  return true;
+}
+
 function bindStaticEvents() {
   els.addNodeMenuBtn.addEventListener("click", () => {
     state.ui.nodeMenuOpen = !state.ui.nodeMenuOpen;
@@ -3153,6 +3202,15 @@ function bindStaticEvents() {
   els.inputOverlay.addEventListener("click", (event) => {
     if (event.target === els.inputOverlay) closeInputSheet();
   });
+  els.closeVideoPlayerBtn.addEventListener("click", closeVideoPlayer);
+  els.videoPlayerOverlay.addEventListener("click", (event) => {
+    if (event.target === els.videoPlayerOverlay) closeVideoPlayer();
+  });
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement && !els.videoPlayerOverlay.hidden) {
+      els.videoPlayerOverlay.classList.add("windowed");
+    }
+  });
   document.addEventListener("keydown", (event) => {
     if ((event.key === "Delete" || event.key === "Backspace") && !isEditingTarget(event.target)) {
       if (state.selectedConnectionId || state.selectedNodeId) {
@@ -3162,6 +3220,10 @@ function bindStaticEvents() {
       return;
     }
     if (event.key === "Escape") {
+      if (!els.videoPlayerOverlay.hidden) {
+        closeVideoPlayer();
+        return;
+      }
       cancelConnection();
       closeCanvasContextMenu();
       state.ui.nodeMenuOpen = false;
@@ -3169,6 +3231,11 @@ function bindStaticEvents() {
     }
   });
   document.addEventListener("click", (event) => {
+    if (openVideoPlayerFromAction(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (!event.target.closest(".node-add-menu")) {
       state.ui.nodeMenuOpen = false;
       applyUiState();
@@ -3208,6 +3275,15 @@ function bindCanvasEvents() {
   });
 
   els.canvasBoard.addEventListener("click", (event) => {
+    if (openVideoPlayerFromAction(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.target.closest?.("[data-media-safe]")) {
+      event.stopPropagation();
+      return;
+    }
     const deleteEdgeTarget = event.target.closest?.("[data-action='delete-connection']");
     if (deleteEdgeTarget) {
       event.stopPropagation();
@@ -3270,6 +3346,10 @@ function bindCanvasEvents() {
   });
 
   els.canvasBoard.addEventListener("pointerdown", (event) => {
+    if (event.target.closest?.("[data-media-safe]")) {
+      event.stopPropagation();
+      return;
+    }
     const connector = event.target.closest("[data-action='connector']");
     if (connector) {
       const nodeEl = event.target.closest(".node");

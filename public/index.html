@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Seedance Canvas Studio</title>
-    <link rel="stylesheet" href="./styles.css?v=20260607-cloudinary-worker" />
+    <link rel="stylesheet" href="./styles.css?v=20260607-video-player" />
   </head>
   <body>
     <div class="app-shell">
@@ -270,6 +270,19 @@
       </section>
     </div>
 
-    <script src="./app.js?v=20260607-cloudinary-worker" type="module"></script>
+    <div id="videoPlayerOverlay" class="video-player-overlay" hidden>
+      <section class="video-player-shell" role="dialog" aria-modal="true" aria-labelledby="videoPlayerTitle">
+        <div class="video-player-head">
+          <h2 id="videoPlayerTitle">视频预览</h2>
+          <div class="video-player-actions">
+            <a id="videoPlayerOpenLink" class="open-link" href="#" target="_blank" rel="noreferrer">新窗口打开</a>
+            <button id="closeVideoPlayerBtn" class="ghost-btn" type="button">关闭</button>
+          </div>
+        </div>
+        <video id="videoPlayer" class="video-player" controls autoplay playsinline preload="metadata"></video>
+      </section>
+    </div>
+
+    <script src="./app.js?v=20260607-video-player" type="module"></script>
   </body>
 </html>

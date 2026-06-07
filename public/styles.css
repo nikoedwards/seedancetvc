@@ -814,6 +814,18 @@ h3 {
   object-fit: cover;
 }
 
+.media-preview-shell {
+  display: grid;
+  gap: 8px;
+}
+
+.media-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .image-preview {
   aspect-ratio: 1 / 1;
   background: #f8fafc;
@@ -1250,6 +1262,65 @@ h3 {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.video-player-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(3, 7, 18, 0.88);
+}
+
+.video-player-overlay[hidden] {
+  display: none;
+}
+
+.video-player-shell {
+  width: min(1120px, 100%);
+  display: grid;
+  gap: 12px;
+}
+
+.video-player-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #f8fafc;
+}
+
+.video-player-head h2 {
+  font-size: 18px;
+}
+
+.video-player-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.video-player-actions .ghost-btn,
+.video-player-actions .open-link {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+}
+
+.video-player {
+  width: 100%;
+  max-height: calc(100vh - 130px);
+  aspect-ratio: 16 / 9;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: #000;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+
+.video-player-overlay.windowed {
+  background: rgba(3, 7, 18, 0.78);
 }
 
 @media (max-width: 1180px) {
