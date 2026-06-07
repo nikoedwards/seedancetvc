@@ -1004,6 +1004,15 @@ h3 {
   color: var(--blue);
 }
 
+.connection-editor.needs-mapping {
+  border-color: rgba(180, 83, 9, 0.28);
+  background: #fff7ed;
+}
+
+.connection-editor.needs-mapping h3 {
+  color: var(--warn);
+}
+
 .two-col {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -992,7 +992,7 @@ function renderInspector() {
     els.nodeSummary.innerHTML = `
       <div class="summary-row"><span>来源</span><strong>${escapeHtml(source?.title || connection.from)}</strong></div>
       <div class="summary-row"><span>目标</span><strong>${escapeHtml(target?.title || connection.to)}</strong></div>
-      <div class="summary-row"><span>映射</span><strong>${escapeHtml(connection.mapping || "未指定")}</strong></div>
+      <div class="summary-row"><span>映射</span><strong>${escapeHtml(connectionMappingLabel(connection, source, target))}</strong></div>
     `;
     els.paramEditor.innerHTML = "";
     return;
@@ -1188,13 +1188,21 @@ function mappingOptionsForConnection(sourceNode, targetNode) {
   return options;
 }
 
+function connectionMappingLabel(connection, sourceNode, targetNode) {
+  if (!connection?.mapping) return "未指定，不会写入请求体";
+  const option = mappingOptionsForConnection(sourceNode, targetNode).find((item) => item.value === connection.mapping);
+  return option?.label || connection.mapping;
+}
+
 function renderConnectionEditor(node) {
   const incoming = getIncomingConnections(node.id);
   if (!incoming.length) return "";
   const canvas = getActiveCanvas();
+  const needsMapping = incoming.some((connection) => !connection.mapping);
   return `
-    <section class="connection-editor">
+    <section class="connection-editor${needsMapping ? " needs-mapping" : ""}">
       <h3>上游输入</h3>
+      ${needsMapping ? `<p class="hint-text">已连接上游输出。请选择它要进入哪个输入槽；未选择时不会写入请求体。</p>` : ""}
       ${incoming.map((connection) => {
         const source = canvas.nodes.find((item) => item.id === connection.from);
         const output = getNodeOutput(source);
@@ -2619,12 +2627,11 @@ function connectNodes(fromId, toId) {
   const source = canvas.nodes.find((node) => node.id === fromId);
   const target = canvas.nodes.find((node) => node.id === toId);
   if (!source || !target) return;
-  const options = mappingOptionsForConnection(source, target).filter((option) => option.value);
   canvas.connections.push({
     id: uid("edge"),
     from: fromId,
     to: toId,
-    mapping: options[0]?.value || ""
+    mapping: ""
   });
   state.ui.connectingFrom = "";
   state.ui.connectionPreview = null;
