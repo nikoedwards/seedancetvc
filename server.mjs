@@ -460,6 +460,147 @@ async function downloadToFile(url, filePath) {
   });
 }
 
+function concatFileLine(filePath) {
+  return `file '${filePath.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`;
+}
+
+function videoExtensionFromUrl(url) {
+  try {
+    const ext = path.extname(new URL(url, "http://local").pathname).toLowerCase();
+    return [".mp4", ".mov", ".webm", ".m4v"].includes(ext) ? ext : ".mp4";
+  } catch {
+    return ".mp4";
+  }
+}
+
+function isServedLocalAssetPath(pathname) {
+  return pathname.startsWith("/outputs/") || pathname.startsWith("/uploads/");
+}
+
+function localAssetPathFromUrl(inputUrl, req) {
+  const value = String(inputUrl || "").trim();
+  if (isServedLocalAssetPath(value)) {
+    return safeJoin(__dirname, decodeURIComponent(value.replace(/^\//, "")));
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.host === req.headers.host && isServedLocalAssetPath(parsed.pathname)) {
+      return safeJoin(__dirname, decodeURIComponent(parsed.pathname.replace(/^\//, "")));
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+async function resolveConcatClip(clip, index, outDir, req) {
+  const url = String(clip.url || "").trim();
+  if (!url) throw new Error(`第 ${index + 1} 个视频没有 URL`);
+  if (/^mock:\/\//i.test(url)) throw new Error(`第 ${index + 1} 个视频是 Mock 地址，不能参与真实拼接`);
+
+  const localPath = localAssetPathFromUrl(url, req);
+  if (localPath) {
+    if (!existsSync(localPath)) throw new Error(`第 ${index + 1} 个本地视频不存在：${url}`);
+    return {
+      ...clip,
+      index: index + 1,
+      sourceUrl: url,
+      filePath: localPath,
+      size: statSync(localPath).size
+    };
+  }
+
+  if (/^data:video\//i.test(url)) {
+    const [, meta = "", data = ""] = url.match(/^data:([^,]+),(.*)$/i) || [];
+    const buffer = meta.includes(";base64") ? Buffer.from(data, "base64") : Buffer.from(decodeURIComponent(data));
+    const filePath = path.join(outDir, `${String(index + 1).padStart(2, "0")}-data.mp4`);
+    await writeFile(filePath, buffer);
+    return { ...clip, index: index + 1, sourceUrl: "data:video", filePath, size: buffer.length };
+  }
+
+  if (!/^https?:\/\//i.test(url)) throw new Error(`第 ${index + 1} 个视频不是可下载地址：${url}`);
+  const ext = videoExtensionFromUrl(url);
+  const filePath = path.join(outDir, `${String(index + 1).padStart(2, "0")}-${slug(clip.title || clip.nodeId || "clip")}${ext}`);
+  await downloadToFile(url, filePath);
+  return {
+    ...clip,
+    index: index + 1,
+    sourceUrl: url,
+    filePath,
+    size: statSync(filePath).size
+  };
+}
+
+async function composeCanvasVideos(payload = {}, req) {
+  const clips = Array.isArray(payload.clips) ? payload.clips : [];
+  if (clips.length < 2) throw new Error("至少需要 2 个视频才能拼接");
+  const id = `compose-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const outDir = path.join(outputDir, "concat", id);
+  mkdirSync(outDir, { recursive: true });
+  const resolvedClips = [];
+  for (const [index, clip] of clips.entries()) {
+    resolvedClips.push(await resolveConcatClip(clip, index, outDir, req));
+  }
+
+  const concatPath = path.join(outDir, "concat.txt");
+  const outputPath = path.join(outDir, "final.mp4");
+  await writeFile(concatPath, resolvedClips.map((clip) => concatFileLine(clip.filePath)).join("\n"), "utf8");
+
+  const compose = {
+    ok: false,
+    id,
+    canvasId: payload.canvasId || "",
+    createdAt: new Date().toISOString(),
+    ffmpegAvailable: hasExecutable("ffmpeg"),
+    clips: resolvedClips.map((clip) => ({
+      order: clip.order || clip.index,
+      nodeId: clip.nodeId || "",
+      title: clip.title || "",
+      sourceUrl: clip.sourceUrl,
+      size: clip.size
+    })),
+    concatFile: `/outputs/concat/${id}/concat.txt`,
+    outputUrl: `/outputs/concat/${id}/final.mp4`
+  };
+
+  if (!compose.ffmpegAvailable) {
+    compose.error = "当前本地环境没有检测到 ffmpeg，暂时无法自动拼接视频。";
+    await writeFile(path.join(outDir, "compose-result.json"), JSON.stringify(compose, null, 2), "utf8");
+    return compose;
+  }
+
+  const copyArgs = ["-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-c", "copy", "-movflags", "+faststart", outputPath];
+  const copyResult = spawnSync("ffmpeg", copyArgs, { encoding: "utf8", windowsHide: true });
+  compose.ffmpegCopyStatus = copyResult.status;
+  compose.ffmpegCopyStderr = copyResult.stderr;
+  compose.method = "concat-copy";
+
+  if (copyResult.status !== 0 || !existsSync(outputPath)) {
+    const reencodeArgs = [
+      "-y",
+      "-f", "concat",
+      "-safe", "0",
+      "-i", concatPath,
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-crf", "20",
+      "-c:a", "aac",
+      "-b:a", "192k",
+      "-movflags", "+faststart",
+      outputPath
+    ];
+    const reencodeResult = spawnSync("ffmpeg", reencodeArgs, { encoding: "utf8", windowsHide: true });
+    compose.ffmpegReencodeStatus = reencodeResult.status;
+    compose.ffmpegReencodeStderr = reencodeResult.stderr;
+    compose.method = "concat-reencode";
+  }
+
+  compose.ok = existsSync(outputPath) && statSync(outputPath).size > 0;
+  if (!compose.ok) compose.error = "ffmpeg 拼接失败，请检查参与拼接的视频编码或查看 stderr。";
+  await writeFile(path.join(outDir, "compose-result.json"), JSON.stringify(compose, null, 2), "utf8");
+  return compose;
+}
+
 function escapeXml(input) {
   return String(input || "")
     .replace(/&/g, "&amp;")
@@ -1099,6 +1240,12 @@ async function route(req, res) {
       const payload = await readJson(req);
       const result = await createImage2Generation(payload.config || {}, payload.requestBody || {});
       sendJson(res, 200, { result });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/videos/concat") {
+      const payload = await readJson(req);
+      const compose = await composeCanvasVideos(payload, req);
+      sendJson(res, 200, { compose });
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/projects") {

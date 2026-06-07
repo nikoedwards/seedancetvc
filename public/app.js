@@ -162,6 +162,9 @@ const state = {
     connectingFrom: "",
     connectionPreview: null,
     connectionTargetId: "",
+    videoSelectMode: false,
+    selectedVideoIds: [],
+    composingVideos: false,
     contextMenu: {
       open: false,
       x: 0,
@@ -223,6 +226,9 @@ const els = {
   zoomInBtn: $("#zoomInBtn"),
   zoomOutBtn: $("#zoomOutBtn"),
   resetViewBtn: $("#resetViewBtn"),
+  selectVideosBtn: $("#selectVideosBtn"),
+  confirmVideoSelectionBtn: $("#confirmVideoSelectionBtn"),
+  cancelVideoSelectionBtn: $("#cancelVideoSelectionBtn"),
   zoomLabel: $("#zoomLabel"),
   clearResponseBtn: $("#clearResponseBtn"),
   canvasTabs: $("#canvasTabs"),
@@ -562,6 +568,9 @@ function applyWorkspaceSnapshot(saved) {
     connectingFrom: "",
     connectionPreview: null,
     connectionTargetId: "",
+    videoSelectMode: false,
+    selectedVideoIds: [],
+    composingVideos: false,
     contextMenu: { ...state.ui.contextMenu, open: false }
   };
   return true;
@@ -630,6 +639,12 @@ function render() {
 
 function applyUiState() {
   if (els.nodeAddMenu) els.nodeAddMenu.hidden = !state.ui.nodeMenuOpen;
+  const selectedCount = selectedVideoIds().length;
+  els.selectVideosBtn.hidden = Boolean(state.ui.videoSelectMode);
+  els.confirmVideoSelectionBtn.hidden = !state.ui.videoSelectMode;
+  els.cancelVideoSelectionBtn.hidden = !state.ui.videoSelectMode;
+  els.confirmVideoSelectionBtn.disabled = selectedCount < 2 || Boolean(state.ui.composingVideos);
+  els.confirmVideoSelectionBtn.textContent = state.ui.composingVideos ? "拼接中" : `确认拼接 (${selectedCount})`;
   if (els.canvasContextMenu) {
     els.canvasContextMenu.hidden = !state.ui.contextMenu?.open;
     els.canvasContextMenu.style.left = `${state.ui.contextMenu?.x || 0}px`;
@@ -655,6 +670,7 @@ function renderCanvas() {
   const canvas = getActiveCanvas();
   els.emptyState.style.display = canvas.nodes.length ? "none" : "grid";
   els.canvasBoard.classList.toggle("is-connecting", Boolean(state.ui.connectingFrom));
+  els.canvasBoard.classList.toggle("is-video-selecting", Boolean(state.ui.videoSelectMode));
   els.canvasBoard.innerHTML = `${renderConnections(canvas)}${canvas.nodes.map(renderCanvasNode).join("")}`;
   const selectedNode = getSelectedNode();
   const selectedConnection = getSelectedConnection();
@@ -903,6 +919,9 @@ function renderImage2CanvasNode(node) {
 
 function renderResultCanvasNode(node) {
   const selected = node.id === state.selectedNodeId ? " selected" : "";
+  const selectOrder = getVideoSelectionOrder(node.id);
+  const selectClass = state.ui.videoSelectMode && isPlayableVideoNode(node) ? " compose-selectable" : "";
+  const selectedClass = selectOrder ? " compose-selected" : "";
   const status = node.status || "pending";
   const videoUrl = node.videoUrl || "";
   const playable = videoUrl && !videoUrl.startsWith("mock://");
@@ -915,7 +934,7 @@ function renderResultCanvasNode(node) {
     ? `<div class="result-suggestions">${suggestions.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>`
     : "";
   return `
-    <article class="node result-node${selected}${connectionClass(node)}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
+    <article class="node result-node${selected}${selectClass}${selectedClass}${connectionClass(node)}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
       <div class="node-head" data-drag-handle="true">
         <div>
           <strong>${escapeHtml(node.title || "视频结果")}</strong>
@@ -924,6 +943,11 @@ function renderResultCanvasNode(node) {
         <span class="status-pill status-${escapeHtml(status)}">${escapeHtml(statusText(status))}</span>
         <button class="node-delete" type="button" data-action="delete-node" title="删除节点">x</button>
       </div>
+      ${state.ui.videoSelectMode && isPlayableVideoNode(node) ? `
+        <button class="compose-check" type="button" data-action="toggle-video-select" title="${selectOrder ? "取消选择" : "选择这个视频"}">
+          ${selectOrder ? `<span>${selectOrder}</span>` : ""}
+        </button>
+      ` : ""}
       ${renderNodeConnector(node)}
       <div class="node-body">
         ${renderResultPreview(node, status, videoUrl, playable)}
@@ -1014,6 +1038,115 @@ function statusText(status) {
     mocked: "Mock"
   };
   return map[status] || status || "未知";
+}
+
+function selectedVideoIds() {
+  if (!Array.isArray(state.ui.selectedVideoIds)) state.ui.selectedVideoIds = [];
+  return state.ui.selectedVideoIds;
+}
+
+function isPlayableVideoNode(node) {
+  return Boolean(node?.type === "video-result" && node.videoUrl && !String(node.videoUrl).startsWith("mock://") && node.status !== "failed");
+}
+
+function getVideoSelectionOrder(nodeId) {
+  const index = selectedVideoIds().indexOf(nodeId);
+  return index >= 0 ? index + 1 : 0;
+}
+
+function selectedVideoNodes() {
+  const canvas = getActiveCanvas();
+  return selectedVideoIds()
+    .map((id) => canvas.nodes.find((node) => node.id === id))
+    .filter(isPlayableVideoNode);
+}
+
+function pruneSelectedVideos() {
+  state.ui.selectedVideoIds = selectedVideoNodes().map((node) => node.id);
+}
+
+function enterVideoSelectionMode() {
+  state.ui.videoSelectMode = true;
+  state.ui.selectedVideoIds = [];
+  state.selectedConnectionId = "";
+  renderCanvas();
+  applyUiState();
+  pushResponse("compose.selection.started", { message: "按顺序点击视频结果节点，确认后会按选择顺序拼接。" });
+  saveWorkspace();
+}
+
+function cancelVideoSelection() {
+  state.ui.videoSelectMode = false;
+  state.ui.selectedVideoIds = [];
+  state.ui.composingVideos = false;
+  renderCanvas();
+  applyUiState();
+  saveWorkspace();
+}
+
+function toggleVideoSelection(nodeId) {
+  const canvas = getActiveCanvas();
+  const node = canvas.nodes.find((item) => item.id === nodeId);
+  if (!isPlayableVideoNode(node)) return;
+  const ids = selectedVideoIds();
+  const existingIndex = ids.indexOf(nodeId);
+  if (existingIndex >= 0) ids.splice(existingIndex, 1);
+  else ids.push(nodeId);
+  renderCanvas();
+  applyUiState();
+  renderRequestPreview();
+  saveWorkspace();
+}
+
+async function confirmVideoSelection() {
+  pruneSelectedVideos();
+  const videos = selectedVideoNodes();
+  if (videos.length < 2) {
+    pushResponse("compose.selection.error", { error: "至少选择 2 个已完成的视频结果节点。" });
+    applyUiState();
+    return;
+  }
+  state.ui.composingVideos = true;
+  applyUiState();
+  pushResponse("compose.started", {
+    clips: videos.map((node, index) => ({ order: index + 1, nodeId: node.id, title: node.title, url: compactDisplayValue(node.videoUrl) }))
+  });
+  try {
+    const result = await postSameOriginJson("/api/videos/concat", {
+      canvasId: state.activeCanvasId,
+      clips: videos.map((node, index) => ({
+        order: index + 1,
+        nodeId: node.id,
+        title: node.title || `Video ${index + 1}`,
+        url: node.videoUrl
+      }))
+    });
+    const compose = result.compose || result;
+    const resultNode = createVideoComposeResultNode(videos, compose);
+    state.ui.videoSelectMode = false;
+    state.ui.selectedVideoIds = [];
+    state.ui.composingVideos = false;
+    selectNode(resultNode.id);
+    pushResponse(compose.ok ? "compose.finished" : "compose.failed", result);
+    render();
+    saveWorkspace();
+  } catch (error) {
+    const payload = error.payload || { error: error instanceof Error ? error.message : String(error) };
+    const resultNode = createVideoComposeResultNode(videos, {
+      ok: false,
+      id: uid("compose"),
+      error: payload.error || (error instanceof Error ? error.message : String(error)),
+      details: payload.details || null,
+      ffmpegAvailable: payload.compose?.ffmpegAvailable
+    });
+    state.ui.videoSelectMode = false;
+    state.ui.selectedVideoIds = [];
+    state.ui.composingVideos = false;
+    selectNode(resultNode.id);
+    pushResponse("compose.error", payload);
+    render();
+    saveWorkspace();
+  }
 }
 
 function renderInspector() {
@@ -2269,6 +2402,25 @@ async function postProxyJson(path, payload) {
   return data;
 }
 
+async function postSameOriginJson(path, payload) {
+  if (!sameOriginApiBaseUrl) await detectSameOriginApi();
+  if (!sameOriginApiBaseUrl) {
+    throw new Error("视频拼接需要本地后端服务和 ffmpeg。请用 npm run dev 打开本地版本后再拼接。");
+  }
+  const response = await fetch(`${sameOriginApiBaseUrl}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await readResponseJson(response);
+  if (!response.ok || data.error) {
+    const error = new Error(data.error || `Local request failed: ${response.status}`);
+    error.payload = data;
+    throw error;
+  }
+  return data;
+}
+
 function proxyConfigStatus() {
   if (!state.apiProxy?.enabled) return null;
   if (!explicitProxyBaseUrl() && !sameOriginApiBaseUrl) return {
@@ -2546,6 +2698,39 @@ function createFailureResultNode(sourceNode, error) {
   canvas.nodes.push(resultNode);
   canvas.connections.push({ id: uid("edge"), from: sourceNode.id, to: resultNode.id });
   return resultNode;
+}
+
+function createVideoComposeResultNode(sourceNodes, composeResult = {}) {
+  const canvas = getActiveCanvas();
+  const x = Math.max(...sourceNodes.map((node) => node.x)) + 520;
+  const y = sourceNodes.reduce((sum, node) => sum + node.y, 0) / Math.max(1, sourceNodes.length);
+  const node = {
+    id: uid("video"),
+    type: "video-result",
+    title: composeResult.ok ? "Merged video" : "Merge failed",
+    sourceNodeId: sourceNodes[0]?.id || "",
+    taskId: composeResult.id || uid("compose"),
+    status: composeResult.ok ? "succeeded" : "failed",
+    x,
+    y,
+    videoUrl: composeResult.outputUrl || "",
+    lastFrameImage: "",
+    usage: null,
+    errorMessage: composeResult.ok ? "" : (composeResult.error || "视频拼接失败，请查看任务响应。"),
+    errorDetails: composeResult.ok ? null : {
+      code: composeResult.ffmpegAvailable === false ? "FFmpegMissing" : "ComposeFailed",
+      message: composeResult.error || "视频拼接失败，请查看任务响应。",
+      suggestions: composeResult.ffmpegAvailable === false
+        ? ["本地需要安装 ffmpeg 才能自动拼接视频。", "安装后重启本地服务，再重新确认拼接。"]
+        : ["检查参与拼接的视频是否都能打开。", "如果视频编码不一致，系统会尝试重编码拼接。"]
+    },
+    raw: composeResult
+  };
+  canvas.nodes.push(node);
+  sourceNodes.forEach((source) => {
+    canvas.connections.push({ id: uid("edge"), from: source.id, to: node.id, mapping: "compose_order" });
+  });
+  return node;
 }
 
 function createImageResultNode(sourceNode, payload) {
@@ -3176,6 +3361,9 @@ function bindStaticEvents() {
   els.zoomInBtn.addEventListener("click", () => setZoom(getActiveCanvas().view.zoom * 1.15));
   els.zoomOutBtn.addEventListener("click", () => setZoom(getActiveCanvas().view.zoom / 1.15));
   els.resetViewBtn.addEventListener("click", resetView);
+  els.selectVideosBtn.addEventListener("click", enterVideoSelectionMode);
+  els.confirmVideoSelectionBtn.addEventListener("click", confirmVideoSelection);
+  els.cancelVideoSelectionBtn.addEventListener("click", cancelVideoSelection);
   els.saveWorkspaceBtn.addEventListener("click", () => saveWorkspace(true));
   els.persistStorageBtn.addEventListener("click", requestPersistentStorage);
   els.exportWorkspaceBtn.addEventListener("click", exportWorkspace);
@@ -3299,6 +3487,19 @@ function bindCanvasEvents() {
     const nodeEl = event.target.closest(".node");
     if (!nodeEl) return;
     const nodeId = nodeEl.dataset.nodeId;
+    if (event.target.closest("[data-action='toggle-video-select']")) {
+      event.stopPropagation();
+      toggleVideoSelection(nodeId);
+      return;
+    }
+    if (state.ui.videoSelectMode) {
+      const node = getActiveCanvas().nodes.find((item) => item.id === nodeId);
+      if (isPlayableVideoNode(node) && !event.target.closest("button, a, video")) {
+        event.stopPropagation();
+        toggleVideoSelection(nodeId);
+      }
+      return;
+    }
     if (event.target.closest("[data-action='connector']")) {
       event.stopPropagation();
       return;

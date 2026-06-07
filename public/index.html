@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Seedance Canvas Studio</title>
-    <link rel="stylesheet" href="./styles.css?v=20260607-video-player" />
+    <link rel="stylesheet" href="./styles.css?v=20260607-video-compose" />
   </head>
   <body>
     <div class="app-shell">
@@ -40,6 +40,9 @@
               <span id="zoomLabel" class="zoom-label">100%</span>
               <button id="zoomInBtn" class="tool-btn" type="button">+</button>
               <button id="resetViewBtn" class="ghost-btn" type="button">重置视图</button>
+              <button id="selectVideosBtn" class="secondary-btn" type="button">拼接视频</button>
+              <button id="confirmVideoSelectionBtn" type="button" hidden>确认拼接</button>
+              <button id="cancelVideoSelectionBtn" class="ghost-btn" type="button" hidden>取消拼接</button>
               <button id="duplicateNodeBtn" class="ghost-btn" type="button" disabled>复制</button>
               <button id="deleteNodeBtn" class="danger-btn" type="button" disabled>删除</button>
             </div>
@@ -283,6 +286,6 @@
       </section>
     </div>
 
-    <script src="./app.js?v=20260607-video-player" type="module"></script>
+    <script src="./app.js?v=20260607-video-compose" type="module"></script>
   </body>
 </html>

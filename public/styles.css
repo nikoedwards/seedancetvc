@@ -747,6 +747,61 @@ h3 {
   border-color: rgba(37, 99, 235, 0.34);
 }
 
+.canvas-board.is-video-selecting .result-node {
+  opacity: 0.55;
+}
+
+.canvas-board.is-video-selecting .result-node.compose-selectable {
+  opacity: 1;
+  cursor: pointer;
+}
+
+.result-node.compose-selectable {
+  border-color: rgba(15, 118, 110, 0.45);
+}
+
+.result-node.compose-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.16), var(--shadow-md);
+}
+
+.compose-check {
+  position: absolute;
+  top: -12px;
+  left: -12px;
+  z-index: 4;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #fff;
+  color: var(--accent-dark);
+  box-shadow: var(--shadow-md);
+  padding: 0;
+}
+
+.compose-check::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.compose-check span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 900;
+}
+
 .image2-node {
   border-color: rgba(124, 58, 237, 0.36);
 }
