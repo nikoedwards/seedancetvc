@@ -1354,7 +1354,7 @@ function renderInputSheet() {
     <p class="hint-text">${escapeHtml(meta.description)}</p>
     <div id="dropZone" class="drop-zone">
       <strong>拖拽、选择或粘贴${escapeHtml(meta.typeLabel)}</strong>
-      <span>支持 Ctrl+V / Cmd+V 粘贴截图或复制的图片。本地文件会保存到浏览器缓存；真实 API 若要求公网资源，请粘贴互联网 URL。</span>
+      <span>支持 Ctrl+V / Cmd+V 粘贴截图或复制的图片。本地文件会保存到浏览器缓存，仅适合预览；真实视频 API 通常需要公网 HTTPS URL。</span>
       <input id="assetFileInput" type="file" ${meta.single ? "" : "multiple"} accept="${escapeHtml(meta.accept)}" hidden />
       <button id="pickFileBtn" class="ghost-btn" type="button">选择本地文件</button>
     </div>
@@ -1532,6 +1532,17 @@ function looksLikeImageUrl(url) {
   return /^data:image\//i.test(url) || /\.(png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url);
 }
 
+function isLocalAssetUrl(url) {
+  return /^(data:|blob:|mock:\/\/|\/uploads\/|\/outputs\/)/i.test(String(url || "").trim());
+}
+
+function mediaUrlFromContentItem(item) {
+  if (item.type === "image_url") return item.image_url?.url || "";
+  if (item.type === "video_url") return item.video_url?.url || "";
+  if (item.type === "audio_url") return item.audio_url?.url || "";
+  return "";
+}
+
 function buildRequest(node) {
   const content = [];
   const prompt = String(node.prompt || "").trim();
@@ -1630,6 +1641,14 @@ function validateNode(node, request) {
   if (videos.length && firstLastImages.length) errors.push("reference_video 不能与 first_frame / last_frame 同时提交。");
   if (audios.length && !images.length && !videos.length) errors.push("reference_audio 必须搭配 image_url 或 video_url。");
   if (!Number.isInteger(request.duration) || request.duration < 4 || request.duration > 15) errors.push("duration 必须是 4-15 的整数。");
+  const localAssetCount = request.content
+    .map(mediaUrlFromContentItem)
+    .filter(isLocalAssetUrl).length;
+  if (localAssetCount && buildRuntimeConfig().mode === "api") {
+    errors.push(`真实 Seedance API 不能使用浏览器本地缓存素材（当前 ${localAssetCount} 个）。请先把图片/视频/音频上传到 CDN 或可公网访问的 HTTPS 地址，再粘贴 URL。`);
+  } else if (localAssetCount) {
+    warnings.push(`当前有 ${localAssetCount} 个本地缓存素材；Mock 可以预览，但真实 API 需要公网 HTTPS URL。`);
+  }
   return { errors, warnings };
 }
 
