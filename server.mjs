@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,6 +80,53 @@ function safeJoin(root, target) {
     throw new Error("Path escapes workspace");
   }
   return resolved;
+}
+
+function executableName(command) {
+  return process.platform === "win32" && !command.toLowerCase().endsWith(".exe") ? `${command}.exe` : command;
+}
+
+function findExecutableUnder(root, fileName, maxDepth = 5) {
+  if (!root || !existsSync(root) || maxDepth < 0) return "";
+  let entries = [];
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return "";
+  }
+
+  const target = fileName.toLowerCase();
+  for (const entry of entries) {
+    if (entry.isFile() && entry.name.toLowerCase() === target) return path.join(root, entry.name);
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const found = findExecutableUnder(path.join(root, entry.name), fileName, maxDepth - 1);
+    if (found) return found;
+  }
+  return "";
+}
+
+let ffmpegCommandCache = "";
+
+function resolveFfmpegCommand() {
+  if (ffmpegCommandCache) return ffmpegCommandCache;
+
+  const ffmpegExe = executableName("ffmpeg");
+  const wingetRoot = process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Packages")
+    : "";
+  const candidates = [
+    process.env.FFMPEG_PATH,
+    path.join(__dirname, "tools", "ffmpeg", "bin", ffmpegExe),
+    path.join(__dirname, "tools", "ffmpeg", ffmpegExe),
+    findExecutableUnder(wingetRoot, ffmpegExe),
+    "ffmpeg"
+  ].filter(Boolean);
+
+  ffmpegCommandCache = candidates.find((candidate) => candidate === "ffmpeg" || existsSync(candidate)) || "ffmpeg";
+  return ffmpegCommandCache;
 }
 
 function hasExecutable(command, args = ["--version"]) {
@@ -545,13 +592,15 @@ async function composeCanvasVideos(payload = {}, req) {
   const concatPath = path.join(outDir, "concat.txt");
   const outputPath = path.join(outDir, "final.mp4");
   await writeFile(concatPath, resolvedClips.map((clip) => concatFileLine(clip.filePath)).join("\n"), "utf8");
+  const ffmpegCommand = resolveFfmpegCommand();
 
   const compose = {
     ok: false,
     id,
     canvasId: payload.canvasId || "",
     createdAt: new Date().toISOString(),
-    ffmpegAvailable: hasExecutable("ffmpeg"),
+    ffmpegAvailable: hasExecutable(ffmpegCommand, ["-version"]),
+    ffmpegCommand,
     clips: resolvedClips.map((clip) => ({
       order: clip.order || clip.index,
       nodeId: clip.nodeId || "",
@@ -570,7 +619,7 @@ async function composeCanvasVideos(payload = {}, req) {
   }
 
   const copyArgs = ["-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-c", "copy", "-movflags", "+faststart", outputPath];
-  const copyResult = spawnSync("ffmpeg", copyArgs, { encoding: "utf8", windowsHide: true });
+  const copyResult = spawnSync(ffmpegCommand, copyArgs, { encoding: "utf8", windowsHide: true });
   compose.ffmpegCopyStatus = copyResult.status;
   compose.ffmpegCopyStderr = copyResult.stderr;
   compose.method = "concat-copy";
@@ -589,7 +638,7 @@ async function composeCanvasVideos(payload = {}, req) {
       "-movflags", "+faststart",
       outputPath
     ];
-    const reencodeResult = spawnSync("ffmpeg", reencodeArgs, { encoding: "utf8", windowsHide: true });
+    const reencodeResult = spawnSync(ffmpegCommand, reencodeArgs, { encoding: "utf8", windowsHide: true });
     compose.ffmpegReencodeStatus = reencodeResult.status;
     compose.ffmpegReencodeStderr = reencodeResult.stderr;
     compose.method = "concat-reencode";
@@ -785,11 +834,13 @@ async function compose(project, results = [], options = {}) {
   const concatList = clips.map((clip) => `file '${clip.replace(/'/g, "'\\''")}'`).join("\n");
   const concatPath = path.join(outDir, "concat.txt");
   await writeFile(concatPath, concatList || "# No mp4 clips generated yet\n", "utf8");
+  const ffmpegCommand = resolveFfmpegCommand();
 
   const editPlan = {
     projectId: project.id,
     createdAt: new Date().toISOString(),
-    ffmpegAvailable: hasExecutable("ffmpeg"),
+    ffmpegAvailable: hasExecutable(ffmpegCommand, ["-version"]),
+    ffmpegCommand,
     bgm: options.bgm || project.timing?.bgmNotes || "",
     clips: results.map((item, index) => ({
       index: index + 1,
@@ -805,7 +856,7 @@ async function compose(project, results = [], options = {}) {
 
   if (editPlan.ffmpegAvailable && clips.length > 0) {
     const args = ["-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-c", "copy", path.join(outDir, "final.mp4")];
-    const result = spawnSync("ffmpeg", args, { encoding: "utf8", windowsHide: true });
+    const result = spawnSync(ffmpegCommand, args, { encoding: "utf8", windowsHide: true });
     editPlan.ffmpegStatus = result.status;
     editPlan.ffmpegStdout = result.stdout;
     editPlan.ffmpegStderr = result.stderr;
@@ -1198,10 +1249,12 @@ async function route(req, res) {
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/health") {
+      const ffmpegCommand = resolveFfmpegCommand();
       sendJson(res, 200, {
         ok: true,
         node: process.version,
-        ffmpeg: hasExecutable("ffmpeg"),
+        ffmpeg: hasExecutable(ffmpegCommand, ["-version"]),
+        ffmpegCommand,
         dataDir,
         outputDir
       });
