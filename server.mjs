@@ -787,16 +787,37 @@ function parseProviderError(data = {}) {
   const privacyImageBlocked =
     String(code).includes("InputImageSensitiveContentDetected") ||
     /input image may contain real person/i.test(message);
+  const unsupportedImageFormat =
+    String(code).includes("UnsupportedImageFormat") ||
+    /image format is not supported/i.test(message);
+  const frameReferenceConflict =
+    /first\/last frame content cannot be mixed with reference media content/i.test(message);
   const userMessage = privacyImageBlocked
     ? "输入图片触发了上游隐私/真人内容安全拦截。请换一张不含真实人物、证件、联系方式或其他隐私信息的参考图；如果需要人物一致性，建议使用授权素材、虚拟人物或先生成一张非真人角色图。"
-    : `Seedance create failed: ${message || JSON.stringify(data)}`;
+    : unsupportedImageFormat
+      ? "Seedance 不支持当前图片输入格式。请使用可公网访问的常规图片 URL，并优先使用 jpg / jpeg / png。"
+      : frameReferenceConflict
+        ? "首帧/尾帧模式不能同时混用参考媒体。请在首帧/尾帧和参考图/参考视频/参考音频之间选一种输入方式。"
+      : `Seedance create failed: ${message || JSON.stringify(data)}`;
   const suggestions = privacyImageBlocked
     ? [
         "删除或替换首帧、尾帧、参考图中可能出现真实人物脸部的图片。",
         "避免上传身份证件、手机号码、地址、聊天截图、工牌等隐私信息。",
         "如果这是 3C 产品 TVC，优先使用产品图、场景图、手部局部图，或用虚拟模特参考图。"
       ]
-    : [];
+    : unsupportedImageFormat
+      ? [
+          "如果这张图来自本地上传或粘贴，它现在多半是 data:image/... 本地缓存，不是 Seedance 可拉取的公网 URL。",
+          "把图片上传到 Uploadcare、Cloudinary、公司素材服务或其他 CDN 后，再粘贴返回的 https 图片地址。",
+          "避免使用 SVG、GIF、AVIF、HTML 跳转页、带鉴权的链接，优先使用 jpg / jpeg / png 的直链。"
+        ]
+      : frameReferenceConflict
+        ? [
+            "如果要精准控制第一帧，请保留首帧图，移除参考图、参考视频和参考音频。",
+            "如果这张图只是人物、产品或风格参考，请把它放到参考图输入，不要放到首帧图。",
+            "尾帧图可以和首帧图组成首尾帧模式，但同样不要再混入 reference_image / reference_video / reference_audio。"
+          ]
+      : [];
   return {
     code,
     message,
