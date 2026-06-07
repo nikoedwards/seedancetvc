@@ -23,6 +23,18 @@ const DEFAULT_IMAGE2_CONFIG = {
   extraHeaders: ""
 };
 
+const DEFAULT_API_PROXY_CONFIG = {
+  enabled: true,
+  baseUrl: "https://seedance-tvc-proxy.nikoedwards75.workers.dev"
+};
+
+const DEFAULT_ASSET_UPLOAD_CONFIG = {
+  provider: "cloudinary",
+  enabled: true,
+  cloudName: "djkxnkopm",
+  uploadPreset: "seedance_unsigned"
+};
+
 const DEFAULT_NODE_PARAMS = {
   ratio: "16:9",
   duration: 5,
@@ -137,10 +149,8 @@ const INPUT_META = {
 const state = {
   config: { ...DEFAULT_CONFIG },
   image2Config: { ...DEFAULT_IMAGE2_CONFIG },
-  apiProxy: {
-    enabled: false,
-    baseUrl: ""
-  },
+  apiProxy: { ...DEFAULT_API_PROXY_CONFIG },
+  assetUpload: { ...DEFAULT_ASSET_UPLOAD_CONFIG },
   canvases: [],
   activeCanvasId: "",
   selectedNodeId: "",
@@ -178,6 +188,9 @@ const els = {
   saveApiConfigBtn: $("#saveApiConfigBtn"),
   apiProxyEnabled: $("#apiProxyEnabled"),
   apiProxyBaseUrl: $("#apiProxyBaseUrl"),
+  cloudinaryUploadEnabled: $("#cloudinaryUploadEnabled"),
+  cloudinaryCloudName: $("#cloudinaryCloudName"),
+  cloudinaryUploadPreset: $("#cloudinaryUploadPreset"),
   testSeedanceApiBtn: $("#testSeedanceApiBtn"),
   seedanceApiTestResult: $("#seedanceApiTestResult"),
   testImage2ApiBtn: $("#testImage2ApiBtn"),
@@ -376,6 +389,9 @@ function syncApiManagerInputs() {
   els.apiSeedanceExtraHeaders.value = state.config.extraHeaders || "";
   els.apiProxyEnabled.checked = Boolean(state.apiProxy?.enabled);
   els.apiProxyBaseUrl.value = state.apiProxy?.baseUrl || "";
+  els.cloudinaryUploadEnabled.checked = Boolean(state.assetUpload?.enabled);
+  els.cloudinaryCloudName.value = state.assetUpload?.cloudName || "";
+  els.cloudinaryUploadPreset.value = state.assetUpload?.uploadPreset || "";
   els.image2ApiKey.value = state.image2Config.apiKey || "";
   els.image2Endpoint.value = state.image2Config.endpoint || "";
   els.image2ModelName.value = state.image2Config.model || "";
@@ -385,6 +401,10 @@ function syncApiManagerInputs() {
 
 function normalizeBaseUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function isGitHubPagesHost() {
+  return /(^|\.)github\.io$/i.test(window.location.hostname);
 }
 
 function updateApiConfigsFromManager() {
@@ -400,9 +420,17 @@ function updateApiConfigsFromManager() {
   state.image2Config.wpTitle = els.image2WpTitle.value.trim() || "demo-app";
   state.image2Config.extraHeaders = els.image2ExtraHeaders.value.trim();
   state.apiProxy = {
+    ...DEFAULT_API_PROXY_CONFIG,
     ...(state.apiProxy || {}),
     enabled: Boolean(els.apiProxyEnabled.checked),
     baseUrl: els.apiProxyBaseUrl.value.trim()
+  };
+  state.assetUpload = {
+    ...DEFAULT_ASSET_UPLOAD_CONFIG,
+    ...(state.assetUpload || {}),
+    enabled: Boolean(els.cloudinaryUploadEnabled.checked),
+    cloudName: els.cloudinaryCloudName.value.trim(),
+    uploadPreset: els.cloudinaryUploadPreset.value.trim()
   };
 }
 
@@ -513,7 +541,11 @@ function applyWorkspaceSnapshot(saved) {
   if (!saved) return false;
   state.config = { ...DEFAULT_CONFIG, ...(saved.config || {}) };
   state.image2Config = { ...DEFAULT_IMAGE2_CONFIG, ...(saved.image2Config || {}) };
-  state.apiProxy = { enabled: false, baseUrl: "", ...(saved.apiProxy || {}) };
+  state.apiProxy = { ...DEFAULT_API_PROXY_CONFIG, ...(saved.apiProxy || {}) };
+  state.assetUpload = { ...DEFAULT_ASSET_UPLOAD_CONFIG, ...(saved.assetUpload || {}) };
+  if (isGitHubPagesHost() && !state.apiProxy.baseUrl) {
+    state.apiProxy = { ...state.apiProxy, enabled: true, baseUrl: DEFAULT_API_PROXY_CONFIG.baseUrl };
+  }
   state.canvases = Array.isArray(saved.canvases) ? saved.canvases : [];
   state.activeCanvasId = saved.activeCanvasId || "";
   state.selectedNodeId = saved.selectedNodeId || "";
@@ -1354,10 +1386,11 @@ function renderInputSheet() {
     <p class="hint-text">${escapeHtml(meta.description)}</p>
     <div id="dropZone" class="drop-zone">
       <strong>拖拽、选择或粘贴${escapeHtml(meta.typeLabel)}</strong>
-      <span>支持 Ctrl+V / Cmd+V 粘贴截图或复制的图片。本地文件会保存到浏览器缓存，仅适合预览；真实视频 API 通常需要公网 HTTPS URL。</span>
+      <span>支持 Ctrl+V / Cmd+V 粘贴截图或复制的图片。配置 Cloudinary 后会自动转成公网 HTTPS URL。</span>
       <input id="assetFileInput" type="file" ${meta.single ? "" : "multiple"} accept="${escapeHtml(meta.accept)}" hidden />
       <button id="pickFileBtn" class="ghost-btn" type="button">选择本地文件</button>
     </div>
+    <p id="assetUploadStatus" class="hint-text"></p>
     <label>
       <span>互联网 URL</span>
       <input id="internetUrlInput" placeholder="https://example.com/asset.png" />
@@ -1435,15 +1468,30 @@ function clipboardImageFiles(clipboardData) {
 
 async function uploadAndAttachFiles(files, node, field, meta, options = {}) {
   if (!files.length) return;
-  const uploadedUrls = await Promise.all(files.map(fileToDataUrl));
-  const urls = getFieldUrls(node, field);
-  setFieldUrls(node, field, limitUrlsForMeta(meta.single ? uploadedUrls.slice(0, 1) : [...urls, ...uploadedUrls], meta));
-  pushResponse("asset.local", {
-    source: options.source || "file",
-    files: files.map((file) => ({ name: file.name, type: file.type, size: file.size })),
-    note: "本地文件已写入浏览器缓存；如真实 API 不支持 data URL，请改用公网 URL。"
-  });
-  afterInputMutation(node, field);
+  setAssetUploadStatus(cloudinaryUploadReady()
+    ? `正在上传 ${files.length} 个素材到 Cloudinary...`
+    : `正在读取 ${files.length} 个本地素材...`);
+  try {
+    const uploadedUrls = cloudinaryUploadReady()
+      ? await Promise.all(files.map((file) => uploadFileToCloudinary(file)))
+      : await Promise.all(files.map(fileToDataUrl));
+    const urls = getFieldUrls(node, field);
+    setFieldUrls(node, field, limitUrlsForMeta(meta.single ? uploadedUrls.slice(0, 1) : [...urls, ...uploadedUrls], meta));
+    pushResponse(cloudinaryUploadReady() ? "asset.cloudinary" : "asset.local", {
+      source: options.source || "file",
+      files: files.map((file) => ({ name: file.name, type: file.type, size: file.size })),
+      urls: uploadedUrls,
+      note: cloudinaryUploadReady()
+        ? "素材已上传为公网 HTTPS URL，可直接用于真实 API。"
+        : "本地文件已写入浏览器缓存；如真实 API 不支持 data URL，请配置 Cloudinary 或改用公网 URL。"
+    });
+    setAssetUploadStatus(cloudinaryUploadReady() ? "上传完成，已写入公网 URL。" : "已写入本地缓存。", "ok");
+    afterInputMutation(node, field);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setAssetUploadStatus(`上传失败：${message}`, "error");
+    pushResponse("asset.upload.error", { error: message });
+  }
 }
 
 function fileToDataUrl(file) {
@@ -1453,6 +1501,69 @@ function fileToDataUrl(file) {
     reader.onerror = () => reject(reader.error || new Error("Failed to read file."));
     reader.readAsDataURL(file);
   });
+}
+
+function setAssetUploadStatus(message, tone = "") {
+  const status = $("#assetUploadStatus");
+  if (!status) return;
+  status.textContent = message || "";
+  status.className = `hint-text${tone ? ` api-result ${tone}` : ""}`;
+}
+
+function cloudinaryConfig() {
+  return {
+    enabled: Boolean(state.assetUpload?.enabled),
+    cloudName: String(state.assetUpload?.cloudName || "").trim(),
+    uploadPreset: String(state.assetUpload?.uploadPreset || "").trim()
+  };
+}
+
+function cloudinaryUploadReady() {
+  const config = cloudinaryConfig();
+  return Boolean(config.enabled && config.cloudName && config.uploadPreset);
+}
+
+async function uploadFileToCloudinary(fileOrDataUrl, fileName = "") {
+  const config = cloudinaryConfig();
+  if (!cloudinaryUploadReady()) throw new Error("Cloudinary 上传配置不完整。");
+  const form = new FormData();
+  if (fileOrDataUrl instanceof Blob) {
+    form.append("file", fileOrDataUrl, fileName || fileOrDataUrl.name || "asset");
+  } else {
+    form.append("file", fileOrDataUrl);
+  }
+  form.append("upload_preset", config.uploadPreset);
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(config.cloudName)}/auto/upload`, {
+    method: "POST",
+    body: form
+  });
+  const data = await response.json().catch(async () => ({ error: { message: await response.text() } }));
+  if (!response.ok) {
+    const message = data.error?.message || `Cloudinary upload failed: ${response.status}`;
+    throw new Error(message);
+  }
+  const url = data.secure_url || data.url;
+  if (!url) throw new Error("Cloudinary 没有返回素材 URL。");
+  return url;
+}
+
+async function publishAssetUrlToCloudinary(url, fileName = "asset") {
+  const value = String(url || "");
+  if (!cloudinaryUploadReady() || !isLocalAssetUrl(value)) return value;
+  if (/^mock:\/\//i.test(value)) return value;
+  if (/^data:/i.test(value)) return uploadFileToCloudinary(value);
+  const response = await fetch(value);
+  if (!response.ok) throw new Error(`无法读取本地素材：HTTP ${response.status}`);
+  const blob = await response.blob();
+  return uploadFileToCloudinary(blob, fileNameFromUrl(value) || fileName);
+}
+
+function fileNameFromUrl(url) {
+  try {
+    return new URL(url, window.location.href).pathname.split("/").filter(Boolean).pop() || "";
+  } catch {
+    return "";
+  }
 }
 
 function afterInputMutation(node, field) {
@@ -1543,6 +1654,32 @@ function mediaUrlFromContentItem(item) {
   return "";
 }
 
+function contentItemWithUrl(item, url) {
+  if (item.type === "image_url") return { ...item, image_url: { ...(item.image_url || {}), url } };
+  if (item.type === "video_url") return { ...item, video_url: { ...(item.video_url || {}), url } };
+  if (item.type === "audio_url") return { ...item, audio_url: { ...(item.audio_url || {}), url } };
+  return item;
+}
+
+async function prepareSeedanceRequestForSubmit(requestBody) {
+  if (buildRuntimeConfig().mode !== "api" || !cloudinaryUploadReady()) return requestBody;
+  let uploaded = 0;
+  const content = await Promise.all((requestBody.content || []).map(async (item, index) => {
+    const url = mediaUrlFromContentItem(item);
+    if (!url || !isLocalAssetUrl(url)) return item;
+    const publicUrl = await publishAssetUrlToCloudinary(url, `seedance-input-${index}`);
+    if (publicUrl !== url) uploaded += 1;
+    return contentItemWithUrl(item, publicUrl);
+  }));
+  if (uploaded) {
+    pushResponse("asset.cloudinary.prepare", {
+      uploaded,
+      note: "提交前已把本地素材转换为公网 HTTPS URL。"
+    });
+  }
+  return { ...requestBody, content };
+}
+
 function buildRequest(node) {
   const content = [];
   const prompt = String(node.prompt || "").trim();
@@ -1603,6 +1740,44 @@ function buildImage2Request(node) {
 function imageReferencePayload(url) {
   if (/^file-[a-zA-Z0-9_-]+$/.test(url)) return { file_id: url };
   return { image_url: { url } };
+}
+
+function imageReferenceUrl(reference = {}) {
+  return reference.image_url?.url || "";
+}
+
+function imageReferenceWithUrl(reference = {}, url) {
+  return { ...reference, image_url: { ...(reference.image_url || {}), url } };
+}
+
+async function prepareImage2RequestForSubmit(requestBody) {
+  if (buildImage2RuntimeConfig().mode !== "api" || !cloudinaryUploadReady()) return requestBody;
+  let uploaded = 0;
+  const images = await Promise.all((requestBody.images || []).map(async (reference, index) => {
+    const url = imageReferenceUrl(reference);
+    if (!url || !isLocalAssetUrl(url)) return reference;
+    const publicUrl = await publishAssetUrlToCloudinary(url, `image2-reference-${index}`);
+    if (publicUrl !== url) uploaded += 1;
+    return imageReferenceWithUrl(reference, publicUrl);
+  }));
+  let mask = requestBody.mask;
+  const maskUrl = imageReferenceUrl(mask || {});
+  if (maskUrl && isLocalAssetUrl(maskUrl)) {
+    const publicUrl = await publishAssetUrlToCloudinary(maskUrl, "image2-mask");
+    if (publicUrl !== maskUrl) uploaded += 1;
+    mask = imageReferenceWithUrl(mask, publicUrl);
+  }
+  if (uploaded) {
+    pushResponse("asset.cloudinary.image2.prepare", {
+      uploaded,
+      note: "Image2 请求前已把本地参考图转换为公网 HTTPS URL。"
+    });
+  }
+  return {
+    ...requestBody,
+    ...(images.length ? { images } : {}),
+    ...(mask ? { mask } : {})
+  };
 }
 
 function validateImage2Node(node, request) {
@@ -2225,6 +2400,31 @@ async function createImage2Direct(requestBody) {
   };
 }
 
+async function publishImage2ResultIfNeeded(payload) {
+  const result = payload?.result || payload;
+  const imageUrl = result?.content?.image_url || "";
+  if (buildImage2RuntimeConfig().mode !== "api" || !imageUrl || !cloudinaryUploadReady() || !isLocalAssetUrl(imageUrl)) {
+    return payload;
+  }
+  const publicUrl = await publishAssetUrlToCloudinary(imageUrl, "image2-result");
+  if (publicUrl === imageUrl) return payload;
+  pushResponse("asset.cloudinary.image2", {
+    url: publicUrl,
+    note: "Image2 结果已上传为公网 HTTPS URL，可继续连接到 Seedance。"
+  });
+  return {
+    ...payload,
+    result: {
+      ...result,
+      content: {
+        ...(result.content || {}),
+        image_url: publicUrl
+      },
+      local_preview_url: imageUrl
+    }
+  };
+}
+
 function buildRuntimeConfig() {
   return {
     ...state.config,
@@ -2488,10 +2688,15 @@ async function createTask(nodeId = state.selectedNodeId) {
     return;
   }
   if (node.type !== "seedance-input") return;
-  const requestBody = buildRequest(node);
-  const validation = validateNode(node, requestBody);
-  if (validation.errors.length) return;
   try {
+    const requestBody = await prepareSeedanceRequestForSubmit(buildRequest(node));
+    const validation = validateNode(node, requestBody);
+    if (validation.errors.length) {
+      selectNode(node.id);
+      renderInspector();
+      renderRequestPreview();
+      return;
+    }
     const result = await createSeedanceTaskDirect(requestBody);
     const taskId = extractTaskId(result);
     if (taskId) node.lastTaskId = taskId;
@@ -2517,7 +2722,14 @@ async function createImage2Task(nodeId = state.selectedNodeId) {
     pushResponse("image2.generate.running", { nodeId: node.id, message: "该 Image2 节点已有生成任务在进行中。" });
     return;
   }
-  const requestBody = buildImage2Request(node);
+  let requestBody;
+  try {
+    requestBody = await prepareImage2RequestForSubmit(buildImage2Request(node));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    pushResponse("image2.asset.prepare.error", { error: message });
+    return;
+  }
   const validation = validateImage2Node(node, requestBody);
   if (validation.errors.length) {
     selectNode(node.id);
@@ -2539,7 +2751,7 @@ async function createImage2Task(nodeId = state.selectedNodeId) {
   render();
   saveWorkspace();
   try {
-    const result = await createImage2Direct(requestBody);
+    const result = await publishImage2ResultIfNeeded(await createImage2Direct(requestBody));
     const record = findNodeRecord(resultNode.id);
     if (record?.node?.type === "image-result") {
       applyImageResult(record.node, result);

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Seedance Canvas Studio</title>
-    <link rel="stylesheet" href="./styles.css?v=20260606-pages-path" />
+    <link rel="stylesheet" href="./styles.css?v=20260607-cloudinary-worker" />
   </head>
   <body>
     <div class="app-shell">
@@ -165,6 +165,28 @@
             <p class="hint-text">只在部署到纯静态站点时需要填写。代理服务需要暴露本项目的 API 路由，用来从服务端转发请求。</p>
           </section>
 
+          <section class="api-card api-proxy-card">
+            <div>
+              <h3>素材上传</h3>
+              <p class="hint-text">本地图片、拖拽图片和粘贴截图会先上传为公网 HTTPS URL，再交给视频节点使用。</p>
+            </div>
+            <label class="switch-row">
+              <span>使用 Cloudinary 上传素材</span>
+              <input id="cloudinaryUploadEnabled" type="checkbox" />
+            </label>
+            <div class="advanced-grid two-col">
+              <label>
+                <span>Cloud name</span>
+                <input id="cloudinaryCloudName" placeholder="your-cloud-name" />
+              </label>
+              <label>
+                <span>Upload preset</span>
+                <input id="cloudinaryUploadPreset" placeholder="unsigned preset" />
+              </label>
+            </div>
+            <p class="hint-text">这两个值不是 API Key。建议在 Cloudinary 里限制 unsigned preset 的文件大小和允许格式。</p>
+          </section>
+
           <section class="api-card">
             <div>
               <h3>Seedance</h3>
@@ -248,6 +270,6 @@
       </section>
     </div>
 
-    <script src="./app.js?v=20260606-pages-path" type="module"></script>
+    <script src="./app.js?v=20260607-cloudinary-worker" type="module"></script>
   </body>
 </html>
