@@ -1467,16 +1467,27 @@ function renderAssetList(node, field) {
   const list = $("#assetList");
   if (!list) return;
   const urls = getFieldUrls(node, field);
+  const meta = INPUT_META[field] || {};
   if (!urls.length) {
     list.innerHTML = `<div class="validation-item">当前输入为空。</div>`;
     return;
   }
   list.innerHTML = urls.map((url, index) => `
     <div class="asset-row">
-      <code title="${escapeHtml(compactDisplayValue(url))}">${escapeHtml(compactDisplayValue(url))}</code>
+      ${renderAssetThumb(url, meta)}
+      <div class="asset-meta">
+        <strong>${escapeHtml(assetDisplayName(url, index, meta))}</strong>
+        <code title="${escapeHtml(compactDisplayValue(url))}">${escapeHtml(compactDisplayValue(url))}</code>
+      </div>
       <button class="ghost-btn" type="button" data-remove-url="${index}">移除</button>
     </div>
   `).join("");
+  list.querySelectorAll("[data-asset-thumb]").forEach((image) => {
+    image.addEventListener("error", () => {
+      image.closest(".asset-thumb")?.classList.add("broken");
+      image.remove();
+    });
+  });
   list.querySelectorAll("[data-remove-url]").forEach((button) => {
     button.addEventListener("click", () => {
       const next = urls.filter((_, index) => index !== Number(button.dataset.removeUrl));
@@ -1484,6 +1495,41 @@ function renderAssetList(node, field) {
       afterInputMutation(node, field);
     });
   });
+}
+
+function renderAssetThumb(url, meta = {}) {
+  if (acceptsImage(meta) || looksLikeImageUrl(url)) {
+    return `
+      <div class="asset-thumb image">
+        <img data-asset-thumb src="${escapeHtml(url)}" alt="asset preview" loading="lazy" draggable="false" />
+        <span>IMG</span>
+      </div>
+    `;
+  }
+  return `<div class="asset-thumb"><span>${escapeHtml(assetTypeLabel(meta))}</span></div>`;
+}
+
+function assetDisplayName(url, index, meta = {}) {
+  const kind = assetTypeLabel(meta);
+  if (/^data:/i.test(url)) return `${kind} ${index + 1} · 本地缓存`;
+  try {
+    const parsed = new URL(url, window.location.href);
+    const fileName = parsed.pathname.split("/").filter(Boolean).pop();
+    return fileName || `${kind} ${index + 1}`;
+  } catch {
+    return `${kind} ${index + 1}`;
+  }
+}
+
+function assetTypeLabel(meta = {}) {
+  if (acceptsImage(meta)) return "图片";
+  if (String(meta.accept || "").includes("video/")) return "视频";
+  if (String(meta.accept || "").includes("audio/")) return "音频";
+  return meta.typeLabel || "素材";
+}
+
+function looksLikeImageUrl(url) {
+  return /^data:image\//i.test(url) || /\.(png|jpe?g|webp|gif|avif|svg)(?:[?#]|$)/i.test(url);
 }
 
 function buildRequest(node) {
