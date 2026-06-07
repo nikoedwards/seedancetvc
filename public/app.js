@@ -148,6 +148,7 @@ const state = {
 };
 
 const activePolls = new Set();
+let sameOriginApiBaseUrl = "";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -339,6 +340,10 @@ function syncApiManagerInputs() {
   els.image2ModelName.value = state.image2Config.model || "";
   els.image2WpTitle.value = state.image2Config.wpTitle || "";
   els.image2ExtraHeaders.value = state.image2Config.extraHeaders || "";
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
 }
 
 function updateApiConfigsFromManager() {
@@ -1581,8 +1586,19 @@ async function updateStorageStatus() {
   const storageText = usedMb && quotaMb ? `当前约 ${usedMb} MB / ${quotaMb} MB` : "当前浏览器支持本地项目缓存";
   const savedText = meta.savedAt ? `上次保存 ${new Date(meta.savedAt).toLocaleString()}` : "尚未保存项目";
   els.storageStatus.textContent = `${persisted ? "本地缓存已加固" : "本地缓存可用，建议导出备份"}。${storageText}。${savedText}。`;
-  els.serverState.textContent = persisted ? "本地缓存已加固" : "静态模式";
-  els.serverState.classList.toggle("ok", Boolean(persisted));
+  const proxyLabel = getApiRuntimeLabel();
+  els.serverState.textContent = proxyLabel.text;
+  els.serverState.classList.toggle("ok", proxyLabel.ok);
+}
+
+function getApiRuntimeLabel() {
+  if (state.apiProxy?.enabled && explicitProxyBaseUrl()) {
+    return { text: "外部代理", ok: true };
+  }
+  if (sameOriginApiBaseUrl) {
+    return { text: "本地代理可用", ok: true };
+  }
+  return { text: "静态模式", ok: false };
 }
 
 async function requestPersistentStorage() {
@@ -1823,12 +1839,17 @@ async function testEndpointConnection(config = {}, endpoint) {
   }
 }
 
+function explicitProxyBaseUrl() {
+  return normalizeBaseUrl(state.apiProxy?.baseUrl);
+}
+
 function proxyBaseUrl() {
-  return String(state.apiProxy?.baseUrl || "").replace(/\/+$/, "");
+  return explicitProxyBaseUrl() || sameOriginApiBaseUrl;
 }
 
 function shouldUseProxy() {
-  return Boolean(state.apiProxy?.enabled && proxyBaseUrl());
+  if (sameOriginApiBaseUrl) return true;
+  return Boolean(state.apiProxy?.enabled && explicitProxyBaseUrl());
 }
 
 function proxyEndpoint(path) {
@@ -1852,12 +1873,41 @@ async function postProxyJson(path, payload) {
 
 function proxyConfigStatus() {
   if (!state.apiProxy?.enabled) return null;
-  if (!proxyBaseUrl()) return {
+  if (!explicitProxyBaseUrl() && !sameOriginApiBaseUrl) return {
     ok: false,
     mode: "proxy",
     message: "已开启代理模式，但代理地址为空。"
   };
   return null;
+}
+
+function uniqueUrls(urls) {
+  return Array.from(new Set(urls.map((url) => url.href)));
+}
+
+function apiBaseFromHealthUrl(url) {
+  return normalizeBaseUrl(url.replace(/\/api\/health(?:[?#].*)?$/, ""));
+}
+
+async function detectSameOriginApi() {
+  sameOriginApiBaseUrl = "";
+  const candidates = uniqueUrls([
+    new URL("/api/health", window.location.href),
+    new URL("./api/health", window.location.href)
+  ]);
+  for (const href of candidates) {
+    try {
+      const response = await fetch(href, { cache: "no-store" });
+      const data = await response.json().catch(() => null);
+      if (response.ok && data?.ok) {
+        sameOriginApiBaseUrl = apiBaseFromHealthUrl(href);
+        return true;
+      }
+    } catch {
+      // Static hosts usually do not expose the local API routes.
+    }
+  }
+  return false;
 }
 
 async function createSeedanceTaskDirect(requestBody) {
@@ -2812,6 +2862,7 @@ function bindCanvasEvents() {
 
 async function init() {
   await loadWorkspace();
+  await detectSameOriginApi();
   ensureWorkspace();
   bindStaticEvents();
   render();

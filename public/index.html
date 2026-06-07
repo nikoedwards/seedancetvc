@@ -152,17 +152,17 @@
           <section class="api-card api-proxy-card">
             <div>
               <h3>调用方式</h3>
-              <p class="hint-text">GitHub Pages 直连 API 需要上游允许浏览器跨域；如果连通性测试提示 CORS，请使用代理模式。</p>
+              <p class="hint-text">本地运行会自动使用当前服务代理；GitHub Pages 或纯静态部署需要上游允许跨域，或填写外部代理地址。</p>
             </div>
             <label class="switch-row">
-              <span>使用 API 代理</span>
+              <span>使用外部 API 代理</span>
               <input id="apiProxyEnabled" type="checkbox" />
             </label>
             <label>
               <span>代理地址</span>
               <input id="apiProxyBaseUrl" placeholder="https://your-proxy.example" />
             </label>
-            <p class="hint-text">代理服务需要暴露本项目的 API 路由，用来从服务端转发请求。</p>
+            <p class="hint-text">只在部署到纯静态站点时需要填写。代理服务需要暴露本项目的 API 路由，用来从服务端转发请求。</p>
           </section>
 
           <section class="api-card">
