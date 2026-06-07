@@ -47,6 +47,11 @@ const DEFAULT_IMAGE2_PARAMS = {
   user: ""
 };
 
+const IMAGE2_API_LIMITS = {
+  referenceImages: 16,
+  masks: 1
+};
+
 const INPUT_META = {
   prompt: {
     title: "Prompt",
@@ -101,17 +106,27 @@ const INPUT_META = {
   },
   referenceImageUrl: {
     title: "参考图",
-    eyebrow: "image input",
-    description: "用于连接上游图片结果或上传一张参考图。进入 Image2 前可在连接映射里选择如何使用。",
+    eyebrow: "legacy image input",
+    description: "旧版单图输入。新节点会使用多参考图输入，最多 16 张。",
     kind: "asset",
     single: true,
+    accept: "image/*",
+    typeLabel: "图片"
+  },
+  image2ReferenceImageUrls: {
+    title: "参考图",
+    eyebrow: "images",
+    description: "用于 Image2 图像参考或编辑，最多 16 张。若同时提供 Mask，Mask 会作用于第一张参考图。",
+    kind: "asset",
+    single: false,
+    maxCount: IMAGE2_API_LIMITS.referenceImages,
     accept: "image/*",
     typeLabel: "图片"
   },
   maskUrl: {
     title: "Mask",
     eyebrow: "mask",
-    description: "可选遮罩图。仅在当前图片模型支持 mask 时生效。",
+    description: "可选遮罩图，最多 1 张。Mask 不是参考图，只在当前图片模型支持局部重绘或遮罩编辑时生效。",
     kind: "asset",
     single: true,
     accept: "image/*",
@@ -262,6 +277,7 @@ function defaultImage2Node(x = 180, y = 150) {
     x,
     y,
     prompt: "画一张清晨湖边的插画，电影感光影",
+    image2ReferenceImageUrls: "",
     referenceImageUrl: "",
     maskUrl: "",
     params: { ...DEFAULT_IMAGE2_PARAMS },
@@ -521,6 +537,7 @@ function ensureWorkspace() {
       if (node.type === "seedance-input") node.params = { ...DEFAULT_NODE_PARAMS, ...(node.params || {}) };
       if (node.type === "image2-input") {
         node.params = { ...DEFAULT_IMAGE2_PARAMS, ...(node.params || {}) };
+        node.image2ReferenceImageUrls = node.image2ReferenceImageUrls || node.referenceImageUrls || node.referenceImageUrl || "";
         node.inputBindings = node.inputBindings || {};
       }
     }
@@ -713,7 +730,7 @@ function renderNode(node) {
 }
 
 function renderPort(node, field, label, detail) {
-  const active = getFieldUrls(node, field).length ? " active" : "";
+  const active = getResolvedFieldUrls(node, field).length ? " active" : "";
   return `
     <button class="input-port${active}" type="button" data-input-field="${field}">
       <strong>${escapeHtml(label)}</strong>
@@ -786,13 +803,14 @@ function renderSeedanceCanvasNode(node) {
 function renderImage2CanvasNode(node) {
   const selected = node.id === state.selectedNodeId ? " selected" : "";
   const promptText = node.prompt || "Prompt is empty";
-  const outputHint = node.referenceImageUrl ? "已设置参考图" : "可接上游图片";
+  const referenceCount = getResolvedFieldUrls(node, "image2ReferenceImageUrls").length;
+  const maskCount = getResolvedFieldUrls(node, "maskUrl").length;
   return `
     <article class="node image2-node${selected}${connectionClass(node)}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px;">
       <div class="node-head" data-drag-handle="true">
         <div>
           <strong>${escapeHtml(node.title)}</strong>
-          <span>text + optional image -> image</span>
+          <span>text + images ${referenceCount}/${IMAGE2_API_LIMITS.referenceImages} + mask ${maskCount}/${IMAGE2_API_LIMITS.masks} -> image</span>
         </div>
         <span class="node-model">${escapeHtml(state.image2Config.model || "gpt-image-2")}</span>
         <button class="node-delete" type="button" data-action="delete-node" title="删除节点">x</button>
@@ -804,8 +822,8 @@ function renderImage2CanvasNode(node) {
           <span>${escapeHtml(promptText.slice(0, 80))}${promptText.length > 80 ? "..." : ""}</span>
         </button>
         <div class="port-grid">
-          ${renderPort(node, "referenceImageUrl", "参考图输入", outputHint)}
-          ${renderPort(node, "maskUrl", "Mask 输入", node.maskUrl ? "已设置" : "可选")}
+          ${renderPort(node, "image2ReferenceImageUrls", "参考图输入", `${referenceCount} / ${IMAGE2_API_LIMITS.referenceImages}`)}
+          ${renderPort(node, "maskUrl", "Mask 输入", `${maskCount} / ${IMAGE2_API_LIMITS.masks}`)}
           <button class="input-port active" type="button" data-focus-params="true">
             <strong>图片参数</strong>
             <span>${node.params.size} / ${node.params.quality} / ${node.params.output_format}</span>
@@ -956,14 +974,16 @@ function renderInspector() {
   }
 
   if (node.type === "image2-input") {
+    const referenceCount = getResolvedFieldUrls(node, "image2ReferenceImageUrls").length;
+    const maskCount = getResolvedFieldUrls(node, "maskUrl").length;
     els.nodeSummary.innerHTML = `
       <label>
         <span>节点名称</span>
         <input data-node-title value="${escapeHtml(node.title)}" />
       </label>
       <div class="summary-row"><span>Prompt</span><strong>${node.prompt.trim() ? "已填写" : "未填写"}</strong></div>
-      <div class="summary-row"><span>参考图</span><strong>${node.referenceImageUrl ? "已设置" : "未设置"}</strong></div>
-      <div class="summary-row"><span>Mask</span><strong>${node.maskUrl ? "已设置" : "未设置"}</strong></div>
+      <div class="summary-row"><span>参考图</span><strong>${referenceCount} / ${IMAGE2_API_LIMITS.referenceImages}</strong></div>
+      <div class="summary-row"><span>Mask</span><strong>${maskCount ? "1 / 1" : "0 / 1"}</strong></div>
     `;
     els.paramEditor.innerHTML = `
       ${renderConnectionEditor(node)}
@@ -1108,7 +1128,7 @@ function mappingOptionsForConnection(sourceNode, targetNode) {
   }
   if (targetNode.type === "image2-input" && output.type === "image") {
     options.push(
-      { value: "referenceImageUrl", label: "作为参考图" },
+      { value: "image2ReferenceImageUrls", label: "作为参考图" },
       { value: "maskUrl", label: "作为 Mask" }
     );
   }
@@ -1207,6 +1227,12 @@ function getResolvedFieldUrl(node, field) {
 
 function getResolvedFieldUrls(node, field) {
   return [...getFieldUrls(node, field), ...getMappedUrls(node, field)];
+}
+
+function limitUrlsForMeta(urls, meta) {
+  if (meta.single) return urls.slice(0, 1);
+  if (meta.maxCount) return urls.slice(0, meta.maxCount);
+  return urls;
 }
 
 function openInputSheet(nodeId, field) {
@@ -1308,7 +1334,7 @@ function bindAssetSheet(meta, node, field) {
     const url = input.value.trim();
     if (!url) return;
     const urls = getFieldUrls(node, field);
-    setFieldUrls(node, field, meta.single ? [url] : [...urls, url]);
+    setFieldUrls(node, field, limitUrlsForMeta(meta.single ? [url] : [...urls, url], meta));
     input.value = "";
     afterInputMutation(node, field);
   });
@@ -1322,7 +1348,7 @@ async function uploadAndAttachFiles(files, node, field, meta) {
   if (!files.length) return;
   const uploadedUrls = await Promise.all(files.map(fileToDataUrl));
   const urls = getFieldUrls(node, field);
-  setFieldUrls(node, field, meta.single ? uploadedUrls.slice(0, 1) : [...urls, ...uploadedUrls]);
+  setFieldUrls(node, field, limitUrlsForMeta(meta.single ? uploadedUrls.slice(0, 1) : [...urls, ...uploadedUrls], meta));
   pushResponse("asset.local", {
     files: files.map((file) => ({ name: file.name, type: file.type, size: file.size })),
     note: "本地文件已写入浏览器缓存；如真实 API 不支持 data URL，请改用公网 URL。"
@@ -1408,6 +1434,7 @@ function buildRequest(node) {
 }
 
 function buildImage2Request(node) {
+  const referenceImageUrls = getResolvedFieldUrls(node, "image2ReferenceImageUrls").slice(0, IMAGE2_API_LIMITS.referenceImages);
   const request = {
     model: state.image2Config.model || "gpt-image-2",
     prompt: String(node.prompt || "").trim(),
@@ -1420,20 +1447,29 @@ function buildImage2Request(node) {
   if (node.params.background && node.params.background !== "auto") request.background = node.params.background;
   if (node.params.moderation) request.moderation = node.params.moderation;
   if (node.params.user) request.user = node.params.user;
+  if (referenceImageUrls.length) request.images = referenceImageUrls.map(imageReferencePayload);
   const maskUrl = getResolvedFieldUrl(node, "maskUrl");
-  if (maskUrl) request.mask = maskUrl;
-  const referenceImageUrl = getResolvedFieldUrl(node, "referenceImageUrl");
-  if (referenceImageUrl) request.prompt = `${request.prompt}\n参考图：${referenceImageUrl}`;
+  if (maskUrl) request.mask = imageReferencePayload(maskUrl);
   return request;
+}
+
+function imageReferencePayload(url) {
+  if (/^file-[a-zA-Z0-9_-]+$/.test(url)) return { file_id: url };
+  return { image_url: { url } };
 }
 
 function validateImage2Node(node, request) {
   const errors = [];
   const warnings = [];
+  const referenceImageUrls = getResolvedFieldUrls(node, "image2ReferenceImageUrls");
+  const maskUrls = getResolvedFieldUrls(node, "maskUrl");
   if (!request.prompt) errors.push("Prompt 不能为空。");
   if (!["1024x1024", "1536x1024", "1024x1536", "auto"].includes(request.size)) errors.push("size 不合法。");
   if (!["high", "medium", "low", "auto"].includes(request.quality)) errors.push("quality 不合法。");
   if (!Number.isInteger(request.n) || request.n < 1) errors.push("n 必须是正整数。");
+  if (referenceImageUrls.length > IMAGE2_API_LIMITS.referenceImages) errors.push(`参考图不能超过 ${IMAGE2_API_LIMITS.referenceImages} 张。`);
+  if (maskUrls.length > IMAGE2_API_LIMITS.masks) errors.push(`Mask 不能超过 ${IMAGE2_API_LIMITS.masks} 张。`);
+  if (maskUrls.length && !referenceImageUrls.length) errors.push("Mask 需要搭配至少 1 张参考图，且会作用于第一张参考图。");
   if (request.background === "transparent" && !["png", "webp"].includes(request.output_format)) {
     warnings.push("transparent background 通常需要 png 或 webp。");
   }
@@ -1513,7 +1549,7 @@ function renderRequestPreview() {
     els.validationBox.innerHTML = [
       ...validation.errors.map((text) => `<div class="validation-item error">${escapeHtml(text)}</div>`),
       ...validation.warnings.map((text) => `<div class="validation-item warn">${escapeHtml(text)}</div>`),
-      validation.errors.length || validation.warnings.length ? "" : `<div class="validation-item">图片请求校验通过，可以生成。</div>`
+      validation.errors.length || validation.warnings.length ? "" : `<div class="validation-item">图片请求校验通过。参考图最多 ${IMAGE2_API_LIMITS.referenceImages} 张，Mask 最多 ${IMAGE2_API_LIMITS.masks} 张。</div>`
     ].join("");
     els.copyRequestBtn.disabled = false;
     els.createTaskBtn.disabled = Boolean(validation.errors.length);
