@@ -1345,8 +1345,8 @@ function renderInputSheet() {
   els.inputSheetBody.innerHTML = `
     <p class="hint-text">${escapeHtml(meta.description)}</p>
     <div id="dropZone" class="drop-zone">
-      <strong>拖拽${escapeHtml(meta.typeLabel)}到这里</strong>
-      <span>本地文件会保存到浏览器缓存；真实 API 若要求公网资源，请粘贴互联网 URL。</span>
+      <strong>拖拽、选择或粘贴${escapeHtml(meta.typeLabel)}</strong>
+      <span>支持 Ctrl+V / Cmd+V 粘贴截图或复制的图片。本地文件会保存到浏览器缓存；真实 API 若要求公网资源，请粘贴互联网 URL。</span>
       <input id="assetFileInput" type="file" ${meta.single ? "" : "multiple"} accept="${escapeHtml(meta.accept)}" hidden />
       <button id="pickFileBtn" class="ghost-btn" type="button">选择本地文件</button>
     </div>
@@ -1397,12 +1397,41 @@ function bindAssetSheet(meta, node, field) {
   });
 }
 
-async function uploadAndAttachFiles(files, node, field, meta) {
+async function handleAssetPaste(event) {
+  if (els.inputOverlay.hidden) return;
+  const { nodeId, field } = state.activeInput || {};
+  const node = getNodeById(nodeId);
+  const meta = INPUT_META[field];
+  if (!node || !meta || meta.kind !== "asset" || !acceptsImage(meta)) return;
+  const files = clipboardImageFiles(event.clipboardData);
+  if (!files.length) return;
+  event.preventDefault();
+  await uploadAndAttachFiles(files, node, field, meta, { source: "clipboard" });
+}
+
+function acceptsImage(meta) {
+  return String(meta.accept || "").split(",").some((part) => part.trim().toLowerCase().startsWith("image/"));
+}
+
+function clipboardImageFiles(clipboardData) {
+  const itemFiles = Array.from(clipboardData?.items || [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file) => file?.type?.startsWith("image/"));
+  const directFiles = Array.from(clipboardData?.files || [])
+    .filter((file) => file?.type?.startsWith("image/"));
+  return [...itemFiles, ...directFiles].filter((file, index, files) =>
+    files.findIndex((item) => item.name === file.name && item.size === file.size && item.type === file.type) === index
+  );
+}
+
+async function uploadAndAttachFiles(files, node, field, meta, options = {}) {
   if (!files.length) return;
   const uploadedUrls = await Promise.all(files.map(fileToDataUrl));
   const urls = getFieldUrls(node, field);
   setFieldUrls(node, field, limitUrlsForMeta(meta.single ? uploadedUrls.slice(0, 1) : [...urls, ...uploadedUrls], meta));
   pushResponse("asset.local", {
+    source: options.source || "file",
     files: files.map((file) => ({ name: file.name, type: file.type, size: file.size })),
     note: "本地文件已写入浏览器缓存；如真实 API 不支持 data URL，请改用公网 URL。"
   });
@@ -2837,6 +2866,11 @@ function bindStaticEvents() {
       applyUiState();
     }
     if (!event.target.closest(".canvas-context-menu")) closeCanvasContextMenu();
+  });
+  document.addEventListener("paste", (event) => {
+    handleAssetPaste(event).catch((error) => {
+      pushResponse("asset.paste.error", { error: error instanceof Error ? error.message : String(error) });
+    });
   });
 
   els.canvasTabs.addEventListener("click", (event) => {
