@@ -177,6 +177,7 @@ const state = {
 
 const activePolls = new Set();
 const activeImage2Generations = new Set();
+const activeComposeRetries = new Set();
 let sameOriginApiBaseUrl = "";
 
 const $ = (selector) => document.querySelector(selector);
@@ -925,6 +926,8 @@ function renderResultCanvasNode(node) {
   const status = node.status || "pending";
   const videoUrl = node.videoUrl || "";
   const playable = videoUrl && !videoUrl.startsWith("mock://");
+  const retryableCompose = isRetryableComposeNode(node);
+  const composeRetrying = activeComposeRetries.has(node.id);
   const errorMessage = node.errorMessage || node.errorDetails?.message || "";
   const suggestions = node.errorDetails?.suggestions || [];
   const errorBlock = errorMessage
@@ -956,6 +959,7 @@ function renderResultCanvasNode(node) {
         ${node.lastFrameImage ? `<div class="last-frame-link">尾帧: ${escapeHtml(node.lastFrameImage)}</div>` : ""}
         <div class="node-actions">
           <button class="ghost-btn" type="button" data-action="poll-result" ${node.taskId ? "" : "disabled"}>轮询</button>
+          ${retryableCompose && (status === "failed" || composeRetrying) ? `<button class="ghost-btn" type="button" data-action="retry-compose" ${composeRetrying ? "disabled" : ""}>${composeRetrying ? "重试中" : "重试拼接"}</button>` : ""}
           ${playable ? `<a class="open-link" href="${escapeHtml(videoUrl)}" target="_blank" rel="noreferrer">打开视频</a>` : ""}
         </div>
       </div>
@@ -1061,6 +1065,42 @@ function selectedVideoNodes() {
     .filter(isPlayableVideoNode);
 }
 
+function composeClipsFromVideoNodes(videos) {
+  return videos.map((node, index) => ({
+    order: index + 1,
+    nodeId: node.id,
+    title: node.title || `Video ${index + 1}`,
+    url: node.videoUrl
+  }));
+}
+
+function normalizeComposeClips(clips = []) {
+  return (Array.isArray(clips) ? clips : [])
+    .map((clip, index) => ({
+      order: Number(clip.order) || index + 1,
+      nodeId: clip.nodeId || "",
+      title: clip.title || `Video ${index + 1}`,
+      url: clip.url || clip.sourceUrl || clip.videoUrl || ""
+    }))
+    .filter((clip) => clip.url);
+}
+
+function getComposeClipsFromResultNode(node) {
+  if (!node || node.type !== "video-result") return [];
+  const storedClips = normalizeComposeClips(Array.isArray(node.composeClips) ? node.composeClips : node.raw?.clips);
+  if (storedClips.length >= 2) return storedClips;
+  const canvas = getActiveCanvas();
+  const sourceNodes = (canvas.connections || [])
+    .filter((connection) => connection.to === node.id && connection.mapping === "compose_order")
+    .map((connection) => canvas.nodes.find((item) => item.id === connection.from))
+    .filter(isPlayableVideoNode);
+  return composeClipsFromVideoNodes(sourceNodes);
+}
+
+function isRetryableComposeNode(node) {
+  return node?.type === "video-result" && getComposeClipsFromResultNode(node).length >= 2;
+}
+
 function pruneSelectedVideos() {
   state.ui.selectedVideoIds = selectedVideoNodes().map((node) => node.id);
 }
@@ -1098,6 +1138,32 @@ function toggleVideoSelection(nodeId) {
   saveWorkspace();
 }
 
+function composeFailureDetails(composeResult = {}) {
+  const isFfmpegMissing = composeResult.ffmpegAvailable === false;
+  return {
+    code: isFfmpegMissing ? "FFmpegMissing" : "ComposeFailed",
+    message: composeResult.error || "视频拼接失败，请查看任务响应。",
+    suggestions: isFfmpegMissing
+      ? ["本地需要安装 ffmpeg 才能自动拼接视频。", "安装后重启本地服务，再重新确认拼接。"]
+      : ["检查参与拼接的视频是否都能打开。", "如果视频编码不一致，系统会尝试重编码拼接。"]
+  };
+}
+
+function applyComposeResultToNode(node, composeResult = {}, clips = []) {
+  if (!node) return;
+  const ok = Boolean(composeResult.ok);
+  node.title = ok ? "Merged video" : "Merge failed";
+  node.taskId = composeResult.id || node.taskId || uid("compose");
+  node.status = ok ? "succeeded" : "failed";
+  node.videoUrl = ok ? (composeResult.outputUrl || "") : "";
+  node.lastFrameImage = "";
+  node.usage = null;
+  node.errorMessage = ok ? "" : (composeResult.error || "视频拼接失败，请查看任务响应。");
+  node.errorDetails = ok ? null : composeFailureDetails(composeResult);
+  node.raw = composeResult;
+  node.composeClips = normalizeComposeClips(clips.length ? clips : composeResult.clips);
+}
+
 async function confirmVideoSelection() {
   pruneSelectedVideos();
   const videos = selectedVideoNodes();
@@ -1108,21 +1174,17 @@ async function confirmVideoSelection() {
   }
   state.ui.composingVideos = true;
   applyUiState();
+  const clips = composeClipsFromVideoNodes(videos);
   pushResponse("compose.started", {
-    clips: videos.map((node, index) => ({ order: index + 1, nodeId: node.id, title: node.title, url: compactDisplayValue(node.videoUrl) }))
+    clips: clips.map((clip) => ({ ...clip, url: compactDisplayValue(clip.url) }))
   });
   try {
     const result = await postSameOriginJson("/api/videos/concat", {
       canvasId: state.activeCanvasId,
-      clips: videos.map((node, index) => ({
-        order: index + 1,
-        nodeId: node.id,
-        title: node.title || `Video ${index + 1}`,
-        url: node.videoUrl
-      }))
+      clips
     });
     const compose = result.compose || result;
-    const resultNode = createVideoComposeResultNode(videos, compose);
+    const resultNode = createVideoComposeResultNode(videos, compose, clips);
     state.ui.videoSelectMode = false;
     state.ui.selectedVideoIds = [];
     state.ui.composingVideos = false;
@@ -1138,12 +1200,57 @@ async function confirmVideoSelection() {
       error: payload.error || (error instanceof Error ? error.message : String(error)),
       details: payload.details || null,
       ffmpegAvailable: payload.compose?.ffmpegAvailable
-    });
+    }, clips);
     state.ui.videoSelectMode = false;
     state.ui.selectedVideoIds = [];
     state.ui.composingVideos = false;
     selectNode(resultNode.id);
     pushResponse("compose.error", payload);
+    render();
+    saveWorkspace();
+  }
+}
+
+async function retryVideoComposeNode(nodeId) {
+  const canvas = getActiveCanvas();
+  const node = canvas.nodes.find((item) => item.id === nodeId);
+  const clips = getComposeClipsFromResultNode(node);
+  if (!node || clips.length < 2 || activeComposeRetries.has(nodeId)) return;
+
+  activeComposeRetries.add(nodeId);
+  node.status = "running";
+  node.title = "Merging video";
+  node.videoUrl = "";
+  node.errorMessage = "";
+  node.errorDetails = null;
+  node.composeClips = clips;
+  render();
+  pushResponse("compose.retry.started", {
+    nodeId,
+    clips: clips.map((clip) => ({ ...clip, url: compactDisplayValue(clip.url) }))
+  });
+
+  try {
+    const result = await postSameOriginJson("/api/videos/concat", {
+      canvasId: state.activeCanvasId,
+      clips
+    });
+    const compose = result.compose || result;
+    applyComposeResultToNode(node, compose, clips);
+    pushResponse(compose.ok ? "compose.retry.finished" : "compose.retry.failed", result);
+  } catch (error) {
+    const payload = error.payload || { error: error instanceof Error ? error.message : String(error) };
+    applyComposeResultToNode(node, {
+      ok: false,
+      id: node.taskId || uid("compose"),
+      error: payload.error || (error instanceof Error ? error.message : String(error)),
+      details: payload.details || null,
+      ffmpegAvailable: payload.compose?.ffmpegAvailable
+    }, clips);
+    pushResponse("compose.retry.error", payload);
+  } finally {
+    activeComposeRetries.delete(nodeId);
+    selectNode(nodeId);
     render();
     saveWorkspace();
   }
@@ -2700,7 +2807,7 @@ function createFailureResultNode(sourceNode, error) {
   return resultNode;
 }
 
-function createVideoComposeResultNode(sourceNodes, composeResult = {}) {
+function createVideoComposeResultNode(sourceNodes, composeResult = {}, clips = []) {
   const canvas = getActiveCanvas();
   const x = Math.max(...sourceNodes.map((node) => node.x)) + 520;
   const y = sourceNodes.reduce((sum, node) => sum + node.y, 0) / Math.max(1, sourceNodes.length);
@@ -2724,8 +2831,10 @@ function createVideoComposeResultNode(sourceNodes, composeResult = {}) {
         ? ["本地需要安装 ffmpeg 才能自动拼接视频。", "安装后重启本地服务，再重新确认拼接。"]
         : ["检查参与拼接的视频是否都能打开。", "如果视频编码不一致，系统会尝试重编码拼接。"]
     },
-    raw: composeResult
+    raw: composeResult,
+    composeClips: normalizeComposeClips(clips.length ? clips : composeResult.clips)
   };
+  applyComposeResultToNode(node, composeResult, node.composeClips);
   canvas.nodes.push(node);
   sourceNodes.forEach((source) => {
     canvas.connections.push({ id: uid("edge"), from: source.id, to: node.id, mapping: "compose_order" });
@@ -3527,6 +3636,11 @@ function bindCanvasEvents() {
     if (event.target.closest("[data-action='poll-result']")) {
       event.stopPropagation();
       pollResultNode(nodeId);
+      return;
+    }
+    if (event.target.closest("[data-action='retry-compose']")) {
+      event.stopPropagation();
+      retryVideoComposeNode(nodeId);
       return;
     }
     const port = event.target.closest("[data-input-field]");
