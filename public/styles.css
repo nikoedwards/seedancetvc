@@ -334,6 +334,34 @@ h3 {
   min-height: 32px;
 }
 
+.cloud-sync-box {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfc;
+}
+
+.cloud-sync-box summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.cloud-sync-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.hint-text.status-ok {
+  color: #047857;
+}
+
+.hint-text.status-error {
+  color: #dc2626;
+}
+
 .card-topline {
   display: flex;
   align-items: flex-start;

@@ -35,6 +35,12 @@ const DEFAULT_ASSET_UPLOAD_CONFIG = {
   uploadPreset: "seedance_unsigned"
 };
 
+const DEFAULT_CLOUD_SYNC_CONFIG = {
+  provider: "github-gist",
+  token: "",
+  gistId: ""
+};
+
 const DEFAULT_NODE_PARAMS = {
   ratio: "16:9",
   duration: 5,
@@ -151,6 +157,7 @@ const state = {
   image2Config: { ...DEFAULT_IMAGE2_CONFIG },
   apiProxy: { ...DEFAULT_API_PROXY_CONFIG },
   assetUpload: { ...DEFAULT_ASSET_UPLOAD_CONFIG },
+  cloudSync: { ...DEFAULT_CLOUD_SYNC_CONFIG },
   canvases: [],
   activeCanvasId: "",
   selectedNodeId: "",
@@ -178,6 +185,7 @@ const state = {
 const activePolls = new Set();
 const activeImage2Generations = new Set();
 const activeComposeRetries = new Set();
+const cloudSyncState = { busy: false };
 let sameOriginApiBaseUrl = "";
 
 const $ = (selector) => document.querySelector(selector);
@@ -253,6 +261,11 @@ const els = {
   importWorkspaceBtn: $("#importWorkspaceBtn"),
   importWorkspaceInput: $("#importWorkspaceInput"),
   exportSecretsToggle: $("#exportSecretsToggle"),
+  cloudSyncToken: $("#cloudSyncToken"),
+  cloudSyncGistId: $("#cloudSyncGistId"),
+  cloudSaveBtn: $("#cloudSaveBtn"),
+  cloudLoadBtn: $("#cloudLoadBtn"),
+  cloudSyncStatus: $("#cloudSyncStatus"),
   inputOverlay: $("#inputOverlay"),
   inputSheetEyebrow: $("#inputSheetEyebrow"),
   inputSheetTitle: $("#inputSheetTitle"),
@@ -411,6 +424,35 @@ function syncApiManagerInputs() {
   els.image2ExtraHeaders.value = state.image2Config.extraHeaders || "";
 }
 
+function syncCloudSyncInputs() {
+  if (!els.cloudSyncToken || !els.cloudSyncGistId) return;
+  els.cloudSyncToken.value = state.cloudSync?.token || "";
+  els.cloudSyncGistId.value = state.cloudSync?.gistId || "";
+}
+
+function readCloudSyncInputs() {
+  state.cloudSync = {
+    ...DEFAULT_CLOUD_SYNC_CONFIG,
+    ...(state.cloudSync || {}),
+    token: els.cloudSyncToken?.value.trim() || "",
+    gistId: els.cloudSyncGistId?.value.trim() || ""
+  };
+  return state.cloudSync;
+}
+
+function setCloudSyncStatus(message, tone = "") {
+  if (!els.cloudSyncStatus) return;
+  els.cloudSyncStatus.textContent = message || "";
+  els.cloudSyncStatus.className = `hint-text ${tone ? `status-${tone}` : ""}`.trim();
+}
+
+function setCloudSyncBusy(busy) {
+  cloudSyncState.busy = busy;
+  if (els.cloudSaveBtn) els.cloudSaveBtn.disabled = busy;
+  if (els.cloudLoadBtn) els.cloudLoadBtn.disabled = busy;
+  if (els.cloudSaveBtn) els.cloudSaveBtn.textContent = busy ? "同步中" : "保存到云端";
+}
+
 function normalizeBaseUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "");
 }
@@ -466,6 +508,9 @@ function serializeWorkspace(options = {}) {
   if (!options.includeSecrets) {
     snapshot.config = { ...snapshot.config, apiKey: "" };
     snapshot.image2Config = { ...snapshot.image2Config, apiKey: "" };
+  }
+  if (!options.includeCloudToken) {
+    snapshot.cloudSync = { ...(snapshot.cloudSync || {}), token: "" };
   }
   return snapshot;
 }
@@ -527,7 +572,7 @@ async function readWorkspaceFromIndexedDb() {
 }
 
 function saveWorkspace(showMessage = false) {
-  const snapshot = serializeWorkspace({ includeSecrets: true });
+  const snapshot = serializeWorkspace({ includeSecrets: true, includeCloudToken: true });
   const meta = lightweightMeta(snapshot);
   try {
     localStorage.setItem(STORAGE_META_KEY, JSON.stringify(meta));
@@ -555,6 +600,7 @@ function applyWorkspaceSnapshot(saved) {
   state.image2Config = { ...DEFAULT_IMAGE2_CONFIG, ...(saved.image2Config || {}) };
   state.apiProxy = { ...DEFAULT_API_PROXY_CONFIG, ...(saved.apiProxy || {}) };
   state.assetUpload = { ...DEFAULT_ASSET_UPLOAD_CONFIG, ...(saved.assetUpload || {}) };
+  state.cloudSync = { ...DEFAULT_CLOUD_SYNC_CONFIG, ...(saved.cloudSync || {}) };
   if (isGitHubPagesHost() && !state.apiProxy.baseUrl) {
     state.apiProxy = { ...state.apiProxy, enabled: true, baseUrl: DEFAULT_API_PROXY_CONFIG.baseUrl };
   }
@@ -2276,6 +2322,222 @@ async function importWorkspaceFile(file) {
   });
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function shouldPublishMediaKey(key) {
+  const value = String(key || "").toLowerCase();
+  if (value.includes("endpoint") || value === "baseurl" || value === "raw_url") return false;
+  return value === "url" || value.includes("url") || value.includes("image") || value.includes("video") || value.includes("audio");
+}
+
+function shouldPublishLocalAssetUrl(value) {
+  return /^(data:|blob:|\/uploads\/|\/outputs\/)/i.test(String(value || "").trim());
+}
+
+async function publishWorkspaceMediaValue(value, key, cache, stats) {
+  if (typeof value === "string") {
+    if (!shouldPublishMediaKey(key)) return value;
+    const urls = splitLines(value);
+    if (urls.length > 1) {
+      const next = [];
+      let changed = false;
+      for (const url of urls) {
+        const published = await publishWorkspaceMediaValue(url, key, cache, stats);
+        next.push(published);
+        if (published !== url) changed = true;
+      }
+      return changed ? joinLines(next) : value;
+    }
+    const trimmed = value.trim();
+    if (!shouldPublishLocalAssetUrl(trimmed)) return value;
+    if (!cloudinaryUploadReady()) {
+      throw new Error("项目里还有本地图片或视频。请先在 API 配置里启用 Cloudinary 素材上传，再保存到云端。");
+    }
+    if (cache.has(trimmed)) return cache.get(trimmed);
+    const published = await publishAssetUrlToCloudinary(trimmed, fileNameFromUrl(trimmed) || "seedance-cloud-asset");
+    cache.set(trimmed, published);
+    if (published !== trimmed) stats.uploaded += 1;
+    return published;
+  }
+
+  if (Array.isArray(value)) {
+    const next = [];
+    for (const item of value) next.push(await publishWorkspaceMediaValue(item, key, cache, stats));
+    return next;
+  }
+
+  if (value && typeof value === "object") {
+    const next = {};
+    for (const [childKey, childValue] of Object.entries(value)) {
+      next[childKey] = await publishWorkspaceMediaValue(childValue, childKey, cache, stats);
+    }
+    return next;
+  }
+
+  return value;
+}
+
+async function prepareWorkspaceForCloud() {
+  const localSnapshot = cloneJson(serializeWorkspace({ includeSecrets: true, includeCloudToken: true }));
+  const stats = { uploaded: 0 };
+  const publishedLocalSnapshot = await publishWorkspaceMediaValue(localSnapshot, "workspace", new Map(), stats);
+  applyWorkspaceSnapshot(publishedLocalSnapshot);
+  saveWorkspace(false);
+
+  const cloudSnapshot = cloneJson(publishedLocalSnapshot);
+  cloudSnapshot.config = { ...cloudSnapshot.config, apiKey: "" };
+  cloudSnapshot.image2Config = { ...cloudSnapshot.image2Config, apiKey: "" };
+  cloudSnapshot.cloudSync = { ...(cloudSnapshot.cloudSync || {}), token: "" };
+  return { snapshot: cloudSnapshot, stats };
+}
+
+function gistHeaders(token) {
+  return {
+    "Accept": "application/vnd.github+json",
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json"
+  };
+}
+
+function cloudSyncPayload(snapshot, stats = {}) {
+  return {
+    type: "seedance-canvas-cloud-project",
+    version: 4,
+    savedAt: new Date().toISOString(),
+    mediaProvider: "cloudinary",
+    uploadedAssets: stats.uploaded || 0,
+    workspace: snapshot
+  };
+}
+
+async function createCloudGist(token, payload) {
+  const response = await fetch("https://api.github.com/gists", {
+    method: "POST",
+    headers: gistHeaders(token),
+    body: JSON.stringify({
+      description: "Seedance Canvas Studio cloud project",
+      public: false,
+      files: {
+        "seedance-cloud-project.json": {
+          content: JSON.stringify(payload, null, 2)
+        }
+      }
+    })
+  });
+  const data = await response.json().catch(async () => ({ message: await response.text() }));
+  if (!response.ok) throw new Error(data.message || `GitHub Gist 创建失败：${response.status}`);
+  return data;
+}
+
+async function updateCloudGist(token, gistId, payload) {
+  const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(gistId)}`, {
+    method: "PATCH",
+    headers: gistHeaders(token),
+    body: JSON.stringify({
+      description: "Seedance Canvas Studio cloud project",
+      files: {
+        "seedance-cloud-project.json": {
+          content: JSON.stringify(payload, null, 2)
+        }
+      }
+    })
+  });
+  const data = await response.json().catch(async () => ({ message: await response.text() }));
+  if (!response.ok) throw new Error(data.message || `GitHub Gist 更新失败：${response.status}`);
+  return data;
+}
+
+async function readCloudGist(token, gistId) {
+  const response = await fetch(`https://api.github.com/gists/${encodeURIComponent(gistId)}`, {
+    headers: gistHeaders(token)
+  });
+  const data = await response.json().catch(async () => ({ message: await response.text() }));
+  if (!response.ok) throw new Error(data.message || `GitHub Gist 读取失败：${response.status}`);
+  const file = data.files?.["seedance-cloud-project.json"] || Object.values(data.files || {})[0];
+  if (!file) throw new Error("这个 Gist 里没有可恢复的项目文件。");
+  if (file.content) return JSON.parse(file.content);
+  if (file.raw_url) {
+    const raw = await fetch(file.raw_url, { headers: { "Authorization": `Bearer ${token}` } });
+    if (!raw.ok) throw new Error(`Gist 原始文件读取失败：${raw.status}`);
+    return JSON.parse(await raw.text());
+  }
+  throw new Error("Gist 文件为空，无法恢复。");
+}
+
+async function saveWorkspaceToCloud() {
+  if (cloudSyncState.busy) return;
+  const config = readCloudSyncInputs();
+  if (!config.token) {
+    setCloudSyncStatus("请先填写 GitHub Token。", "error");
+    return;
+  }
+
+  setCloudSyncBusy(true);
+  setCloudSyncStatus("正在上传本地媒体并保存项目...", "");
+  try {
+    const { snapshot, stats } = await prepareWorkspaceForCloud();
+    const payload = cloudSyncPayload(snapshot, stats);
+    const gist = config.gistId
+      ? await updateCloudGist(config.token, config.gistId, payload)
+      : await createCloudGist(config.token, payload);
+    state.cloudSync = { ...state.cloudSync, gistId: gist.id, token: config.token };
+    syncCloudSyncInputs();
+    saveWorkspace(false);
+    render();
+    setCloudSyncStatus(`已保存到云端。${stats.uploaded ? `上传了 ${stats.uploaded} 个本地素材。` : "没有需要上传的本地素材。"}`, "ok");
+    pushResponse("cloud.sync.saved", {
+      gistId: gist.id,
+      uploadedAssets: stats.uploaded || 0,
+      updatedAt: gist.updated_at
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setCloudSyncStatus(`保存失败：${message}`, "error");
+    pushResponse("cloud.sync.save.error", { error: message });
+  } finally {
+    setCloudSyncBusy(false);
+  }
+}
+
+async function loadWorkspaceFromCloud() {
+  if (cloudSyncState.busy) return;
+  const config = readCloudSyncInputs();
+  if (!config.token || !config.gistId) {
+    setCloudSyncStatus("请填写 GitHub Token 和 Gist ID。", "error");
+    return;
+  }
+
+  setCloudSyncBusy(true);
+  setCloudSyncStatus("正在从云端恢复项目...", "");
+  try {
+    const payload = await readCloudGist(config.token, config.gistId);
+    const snapshot = payload.workspace || payload;
+    if (!snapshot?.canvases) throw new Error("云端项目格式不正确。");
+    if (!snapshot.config?.apiKey && state.config.apiKey) snapshot.config = { ...(snapshot.config || {}), apiKey: state.config.apiKey };
+    if (!snapshot.image2Config?.apiKey && state.image2Config.apiKey) snapshot.image2Config = { ...(snapshot.image2Config || {}), apiKey: state.image2Config.apiKey };
+    snapshot.cloudSync = { ...(snapshot.cloudSync || {}), token: config.token, gistId: config.gistId };
+    applyWorkspaceSnapshot(snapshot);
+    ensureWorkspace();
+    saveWorkspace(true);
+    syncCloudSyncInputs();
+    render();
+    setCloudSyncStatus(`已从云端恢复。画布 ${state.canvases.length} 个。`, "ok");
+    pushResponse("cloud.sync.loaded", {
+      gistId: config.gistId,
+      canvases: state.canvases.length,
+      savedAt: payload.savedAt || ""
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setCloudSyncStatus(`恢复失败：${message}`, "error");
+    pushResponse("cloud.sync.load.error", { error: message });
+  } finally {
+    setCloudSyncBusy(false);
+  }
+}
+
 function parseExtraHeaders(extraHeaders) {
   if (!extraHeaders?.trim()) return {};
   return JSON.parse(extraHeaders);
@@ -3481,6 +3743,14 @@ function bindStaticEvents() {
     await importWorkspaceFile(els.importWorkspaceInput.files?.[0]);
     els.importWorkspaceInput.value = "";
   });
+  els.cloudSaveBtn?.addEventListener("click", saveWorkspaceToCloud);
+  els.cloudLoadBtn?.addEventListener("click", loadWorkspaceFromCloud);
+  [els.cloudSyncToken, els.cloudSyncGistId].forEach((input) => {
+    input?.addEventListener("change", () => {
+      readCloudSyncInputs();
+      saveWorkspace(false);
+    });
+  });
   els.clearResponseBtn.addEventListener("click", () => {
     state.responseLog = [];
     renderResponseLog();
@@ -3778,6 +4048,7 @@ async function init() {
   await detectSameOriginApi();
   ensureWorkspace();
   bindStaticEvents();
+  syncCloudSyncInputs();
   render();
   await updateStorageStatus();
 }

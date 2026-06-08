@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Seedance Canvas Studio</title>
-    <link rel="stylesheet" href="./styles.css?v=20260607-video-compose" />
+    <link rel="stylesheet" href="./styles.css?v=20260608-cloud-sync" />
   </head>
   <body>
     <div class="app-shell">
@@ -111,6 +111,24 @@
               <button id="importWorkspaceBtn" class="ghost-btn" type="button">导入项目</button>
               <input id="importWorkspaceInput" type="file" accept="application/json,.json,.seedance-project" hidden />
             </div>
+            <details class="cloud-sync-box">
+              <summary>云同步</summary>
+              <div class="cloud-sync-body">
+                <label>
+                  <span>GitHub Token</span>
+                  <input id="cloudSyncToken" type="password" autocomplete="off" placeholder="只需要 gist 权限" />
+                </label>
+                <label>
+                  <span>Gist ID</span>
+                  <input id="cloudSyncGistId" placeholder="首次保存可留空" />
+                </label>
+                <div class="inline-actions storage-actions">
+                  <button id="cloudSaveBtn" class="secondary-btn" type="button">保存到云端</button>
+                  <button id="cloudLoadBtn" class="ghost-btn" type="button">从云端恢复</button>
+                </div>
+                <p id="cloudSyncStatus" class="hint-text">项目 JSON 会保存到 secret Gist；本地视频会先上传到 Cloudinary。</p>
+              </div>
+            </details>
           </section>
 
           <details class="compact-help inspector-help">
@@ -286,6 +304,6 @@
       </section>
     </div>
 
-    <script src="./app.js?v=20260608-compose-retry" type="module"></script>
+    <script src="./app.js?v=20260608-cloud-sync" type="module"></script>
   </body>
 </html>
